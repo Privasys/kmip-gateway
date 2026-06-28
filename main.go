@@ -39,15 +39,19 @@ func loadConfig() (vault.Config, string) {
 		}
 	}
 	return vault.Config{
-		VaultID:       os.Getenv("KMIP_VAULT_ID"),
-		Endpoints:     endpoints,
-		MRENCLAVE:     os.Getenv("KMIP_VAULT_MRENCLAVE"),
-		AttServer:     os.Getenv("KMIP_ATTESTATION_SERVER"),
-		AttToken:      os.Getenv("KMIP_ATTESTATION_TOKEN"),
-		OwnerToken:    os.Getenv("KMIP_OWNER_TOKEN"),
-		OwnerSub:      os.Getenv("KMIP_OWNER_SUB"),
-		ManagerURL:    os.Getenv("KMIP_MANAGER_IDENTITY_URL"),
-		IdentityToken: os.Getenv("KMIP_VAULT_IDENTITY_TOKEN"),
+		VaultID:    os.Getenv("KMIP_VAULT_ID"),
+		Endpoints:  endpoints,
+		MRENCLAVE:  os.Getenv("KMIP_VAULT_MRENCLAVE"),
+		AttServer:  os.Getenv("KMIP_ATTESTATION_SERVER"),
+		AttToken:   os.Getenv("KMIP_ATTESTATION_TOKEN"),
+		OwnerToken: os.Getenv("KMIP_OWNER_TOKEN"),
+		OwnerSub:   os.Getenv("KMIP_OWNER_SUB"),
+		ManagerURL: os.Getenv("KMIP_MANAGER_IDENTITY_URL"),
+		// App-identity is opted in by setting KMIP_MANAGER_IDENTITY_URL; the
+		// per-app token is the platform-standard PRIVASYS_CONTAINER_TOKEN the
+		// runtime already injects (KMIP_VAULT_IDENTITY_TOKEN overrides it for
+		// local testing).
+		IdentityToken: env("KMIP_VAULT_IDENTITY_TOKEN", os.Getenv("PRIVASYS_CONTAINER_TOKEN")),
 	}, env("KMIP_LISTEN_ADDR", "0.0.0.0:5696")
 }
 
