@@ -27,16 +27,23 @@ the gateway never sees plaintext keys.
 - `internal/control/` — a small HTTP surface: the manager's health probe and a
   few management operations exposed as MCP tools (see `privasys.json`).
 
-## App identity and the vault
+## Vault authentication
 
-The gateway runs as a Privasys confidential container-app, so it has its own
-attested identity: a per-app RA-TLS leaf carrying the app id (OID 3.6) and a
-measured image (OID 3.2). Point it at that leaf (`KMIP_CLIENT_CERT` /
-`KMIP_CLIENT_KEY`) and it authenticates to the vault **as the app**: keys it
-creates bind to its stable certificate thumbprint (and, with an app-id-owner
-policy, to MR_APP), so no long-lived owner bearer sits in the key data path. When
-no leaf is configured it falls back to an owner bearer plus an ephemeral
-holder-of-key certificate.
+Today the gateway authenticates to the vault as the **vault owner**, using an
+OIDC bearer (`KMIP_OWNER_TOKEN`), exactly like the CLI. Keys are owned by that
+account; the bearer authorises data-plane operations and the platform mints the
+holder-of-key grant for key creation.
+
+**App identity (future).** The gateway runs as a confidential container-app, so
+it has an attested identity (per-app RA-TLS leaf carrying app id OID 3.6 and the
+measured image OID 3.2). The natural next step is for the gateway to authenticate
+to the vault **as the app** (MR_APP), so no long-lived owner bearer sits in the
+data path. The gateway cannot do this from app code on its own: the vault
+requires a fresh per-connection TDX quote, which only the in-TD manager can mint
+(see `enclave-os-virtual` `internal/vaultkey`, which already does exactly this for
+the per-app data key). It needs the manager to expose an attested vault egress to
+the app, plus a key policy that grants the operations to the app TEE principal
+(mirroring the per-app data-key policy that grants `ExportKey` to `AnyTee`).
 
 ## Surfaces
 
@@ -55,8 +62,7 @@ holder-of-key certificate.
 | `KMIP_ATTESTATION_SERVER` | attestation server verify endpoint |
 | `KMIP_ATTESTATION_TOKEN` | bearer for quote verification (`aud=attestation-server`) |
 | `KMIP_MGMT_URL` | management-service origin (enables key creation via minted grants) |
-| `KMIP_OWNER_TOKEN` | the vault owner's OIDC bearer (fallback when no app leaf) |
-| `KMIP_CLIENT_CERT` / `KMIP_CLIENT_KEY` | the app RA-TLS leaf (cert / key) to authenticate to the vault as the app |
+| `KMIP_OWNER_TOKEN` | the vault owner's OIDC bearer |
 | `KMIP_LISTEN_ADDR` | KMIP listen address (default `0.0.0.0:5696`) |
 | `PORT` | HTTP surface port, injected by the manager (default `8080`) |
 

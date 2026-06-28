@@ -39,15 +39,13 @@ func loadConfig() (vault.Config, string) {
 		}
 	}
 	return vault.Config{
-		VaultID:        os.Getenv("KMIP_VAULT_ID"),
-		Endpoints:      endpoints,
-		MRENCLAVE:      os.Getenv("KMIP_VAULT_MRENCLAVE"),
-		AttServer:      os.Getenv("KMIP_ATTESTATION_SERVER"),
-		AttToken:       os.Getenv("KMIP_ATTESTATION_TOKEN"),
-		OwnerToken:     os.Getenv("KMIP_OWNER_TOKEN"),
-		OwnerSub:       os.Getenv("KMIP_OWNER_SUB"),
-		ClientCertPath: os.Getenv("KMIP_CLIENT_CERT"),
-		ClientKeyPath:  os.Getenv("KMIP_CLIENT_KEY"),
+		VaultID:    os.Getenv("KMIP_VAULT_ID"),
+		Endpoints:  endpoints,
+		MRENCLAVE:  os.Getenv("KMIP_VAULT_MRENCLAVE"),
+		AttServer:  os.Getenv("KMIP_ATTESTATION_SERVER"),
+		AttToken:   os.Getenv("KMIP_ATTESTATION_TOKEN"),
+		OwnerToken: os.Getenv("KMIP_OWNER_TOKEN"),
+		OwnerSub:   os.Getenv("KMIP_OWNER_SUB"),
 	}, env("KMIP_LISTEN_ADDR", "0.0.0.0:5696")
 }
 
@@ -56,13 +54,6 @@ func grantorState(g vault.Grantor) string {
 		return "disabled (set KMIP_MGMT_URL to enable)"
 	}
 	return "enabled"
-}
-
-func authMode(s *vault.Session) string {
-	if s.UsesAppIdentity() {
-		return "app RA-TLS leaf"
-	}
-	return "owner bearer"
 }
 
 func main() {
@@ -74,10 +65,7 @@ func main() {
 	if mgmt := os.Getenv("KMIP_MGMT_URL"); mgmt != "" {
 		grantor = platform.New(mgmt, cfg.OwnerToken)
 	}
-	sess, err := vault.New(cfg, grantor)
-	if err != nil {
-		log.Fatalf("kmip-gateway: %v", err)
-	}
+	sess := vault.New(cfg, grantor)
 
 	// HTTP surface (health + management MCP tools) on the manager-injected $PORT.
 	httpAddr := "0.0.0.0:" + env("PORT", "8080")
@@ -93,8 +81,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("kmip-gateway: listen %s: %v", addr, err)
 	}
-	log.Printf("kmip-gateway: fronting vault %s (%d constellation endpoints, key-creation %s, vault auth = %s); KMIP TTLV on %s",
-		cfg.VaultID, len(cfg.Endpoints), grantorState(grantor), authMode(sess), addr)
+	log.Printf("kmip-gateway: fronting vault %s (%d constellation endpoints, key-creation %s, vault auth = owner bearer); KMIP TTLV on %s",
+		cfg.VaultID, len(cfg.Endpoints), grantorState(grantor), addr)
 	if err := kmipsrv.New(sess).Serve(l); err != nil {
 		log.Fatalf("kmip-gateway: serve: %v", err)
 	}
