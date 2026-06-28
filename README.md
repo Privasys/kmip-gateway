@@ -34,16 +34,20 @@ OIDC bearer (`KMIP_OWNER_TOKEN`), exactly like the CLI. Keys are owned by that
 account; the bearer authorises data-plane operations and the platform mints the
 holder-of-key grant for key creation.
 
-**App identity (future).** The gateway runs as a confidential container-app, so
-it has an attested identity (per-app RA-TLS leaf carrying app id OID 3.6 and the
-measured image OID 3.2). The natural next step is for the gateway to authenticate
-to the vault **as the app** (MR_APP), so no long-lived owner bearer sits in the
-data path. The gateway cannot do this from app code on its own: the vault
-requires a fresh per-connection TDX quote, which only the in-TD manager can mint
-(see `enclave-os-virtual` `internal/vaultkey`, which already does exactly this for
-the per-app data key). It needs the manager to expose an attested vault egress to
-the app, plus a key policy that grants the operations to the app TEE principal
-(mirroring the per-app data-key policy that grants `ExportKey` to `AnyTee`).
+**App identity (the target).** The gateway authenticates to the vault **as
+itself**, the same way the per-app data key does, with no owner bearer in the
+data path. On each vault connection the gateway's `GetClientCertificate` callback
+hands the vault's RA-TLS challenge to the in-TD **manager**, which mints a
+one-shot client certificate carrying a fresh TDX quote bound to the challenge and
+the gateway's app id (OID 3.6) — the same `mintIdentity` it uses for the data key
+(`enclave-os-virtual` `internal/vaultkey`). The vault trusts that app id because
+the manager is the measured sole minter, the platform's root of trust: an app
+never mints its own identity. The manager stays out of the key data path (it only
+vouches for identity); the gateway remains the vault client.
+
+The key policy then grants the operations to the gateway's app TEE principal
+(app id OID 3.6), mirroring the per-app data-key policy that grants `ExportKey` to
+`AnyTee`.
 
 ## Surfaces
 
