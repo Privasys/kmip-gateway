@@ -1,0 +1,12 @@
+.git
+.gitignore
+.gitattributes
+.dockerignore
+Dockerfile
+README.md
+LICENSE
+/kmip-gateway
+/kmip-gateway.exe
+/dist/
+*.out
+*.test
