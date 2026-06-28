@@ -37,6 +37,16 @@ type Config struct {
 	AttToken   string   // aud=attestation-server bearer for quote verification
 	OwnerToken string   // the vault owner's OIDC bearer (aud = the vault audience)
 	OwnerSub   string   // the owner's subject (cosmetic, used in the cnf cert CN)
+
+	// App identity. When the gateway runs as a Privasys confidential app, the
+	// runtime provisions it a per-app RA-TLS leaf carrying the app id (OID 3.6).
+	// Pointing the gateway at that leaf lets it authenticate to the vault AS the
+	// app: keys it creates bind to its stable cnf (and, with an app-id-owner
+	// policy, to MR_APP) rather than an ephemeral per-create certificate, so no
+	// long-lived owner bearer sits in the data path. When unset, the gateway
+	// falls back to OwnerToken + an ephemeral holder-of-key cert.
+	ClientCertPath string
+	ClientKeyPath  string
 }
 
 // KeyGrant is the platform's grant for a new key plus the constellation
@@ -62,9 +72,35 @@ type Grantor interface {
 type Session struct {
 	cfg     Config
 	grantor Grantor
+
+	// appCert is the gateway's own RA-TLS leaf (app identity), loaded once when
+	// ClientCertPath/ClientKeyPath are set; appCnf is its SHA-256 thumbprint.
+	appCert *tls.Certificate
+	appCnf  string
 }
 
-func New(cfg Config, grantor Grantor) *Session { return &Session{cfg: cfg, grantor: grantor} }
+// New builds a session. When the config points at an app RA-TLS leaf, the
+// session loads it and authenticates to the vault as the app.
+func New(cfg Config, grantor Grantor) (*Session, error) {
+	s := &Session{cfg: cfg, grantor: grantor}
+	if cfg.ClientCertPath != "" && cfg.ClientKeyPath != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.ClientCertPath, cfg.ClientKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("load app RA-TLS leaf: %w", err)
+		}
+		if len(cert.Certificate) == 0 {
+			return nil, fmt.Errorf("app RA-TLS leaf has no certificate")
+		}
+		sum := sha256.Sum256(cert.Certificate[0])
+		s.appCert = &cert
+		s.appCnf = base64.RawURLEncoding.EncodeToString(sum[:])
+	}
+	return s, nil
+}
+
+// UsesAppIdentity reports whether the gateway authenticates to the vault with its
+// own app RA-TLS leaf (rather than a bearer + ephemeral cert).
+func (s *Session) UsesAppIdentity() bool { return s.appCert != nil }
 
 // Handle is the constellation handle for a key name in this vault.
 func (s *Session) Handle(name string) string {
@@ -81,9 +117,9 @@ func (s *Session) policy() (*ratls.VerificationPolicy, error) {
 		return nil, fmt.Errorf("vault mrenclave must be 32 bytes of hex")
 	}
 	return &ratls.VerificationPolicy{
-		TEE:        ratls.TeeTypeSGX,
-		MRENCLAVE:  mre,
-		ReportData: ratls.ReportDataDeterministic,
+		TEE:               ratls.TeeTypeSGX,
+		MRENCLAVE:         mre,
+		ReportData:        ratls.ReportDataDeterministic,
 		QuoteVerification: &ratls.QuoteVerificationConfig{Endpoint: s.cfg.AttServer, Token: s.cfg.AttToken},
 	}, nil
 }
@@ -167,9 +203,14 @@ func (s *Session) Create(ctx context.Context, name, keyType string, exportable b
 	if err != nil {
 		return "", err
 	}
-	cert, cnf, err := generateClientCert(s.cfg.OwnerSub)
-	if err != nil {
-		return "", fmt.Errorf("client cert: %w", err)
+	// Bind the new key to the gateway's stable app leaf when running as an app;
+	// otherwise mint an ephemeral holder-of-key cert for the create.
+	cert, cnf := s.appCert, s.appCnf
+	if cert == nil {
+		cert, cnf, err = generateClientCert(s.cfg.OwnerSub)
+		if err != nil {
+			return "", fmt.Errorf("client cert: %w", err)
+		}
 	}
 	g, err := s.grantor.MintKeyGrant(ctx, s.cfg.VaultID, name, keyType, cnf, exportable)
 	if err != nil {
@@ -198,6 +239,11 @@ func (s *Session) dialOpts() (vsdk.DialOptions, error) {
 	p, err := s.policy()
 	if err != nil {
 		return vsdk.DialOptions{}, err
+	}
+	if s.appCert != nil {
+		// App identity: present the gateway's RA-TLS leaf (holder-of-key) instead
+		// of a bearer. The vault authorises by the leaf's cnf / app id.
+		return vsdk.DialOptions{ClientCert: s.appCert, VaultPolicy: p}, nil
 	}
 	return vsdk.DialOptions{AuthToken: staticToken(s.cfg.OwnerToken), VaultPolicy: p}, nil
 }

@@ -1,0 +1,68 @@
+{
+    "store": {
+        "tagline": "A standard KMIP 2.1 interface in front of the Privasys vHSM, so existing key-management tooling talks to an attested enclave key store.",
+        "category": "Security & Privacy",
+        "keywords": "kmip, kmip 2.1, vhsm, hsm, key management, kms, vault, encryption, signing, ra-tls, attestation, enclave os, sgx, tdx, confidential computing, ttlv, interop",
+        "website_url": "https://privasys.org",
+        "support_email": "contact@privasys.org",
+        "privacy_url": "https://privasys.org/legal/privacy/",
+        "tos_url": "https://privasys.org/legal/terms/",
+        "description": "KMIP Gateway puts the standard KMIP 2.1 protocol in front of the Privasys vHSM. Enterprise key-management tooling, storage arrays, and databases that already speak KMIP can use confidential, attested keys without changing how they talk to a key store.\n\nThis is the standard-skin, novel-core pattern: a familiar KMIP interface over the attested-policy vault. Key material is created and used inside the enclave; the gateway never sees plaintext keys, and the Privasys control plane is never in the key data path.\n\nWHAT IT DOES\n- Speaks KMIP TTLV over TLS on the standard KMIP port (5696).\n- Maps KMIP operations to in-enclave vault operations: Create (AES-256-GCM or ECDSA-P256), Encrypt and Decrypt (AES-256-GCM wrap and unwrap), Sign (in-enclave ECDSA-P256), GetAttributes, Locate, and Destroy.\n- Dials the vault constellation directly over RA-TLS, so each operation is verified against the vault enclave measurement.\n- Runs itself as a Privasys confidential container-app, so the gateway is attested end to end and can authenticate to the vault using its own app identity.\n\nWHO IT IS FOR\nTeams who want to keep their existing KMIP clients but move the keys behind hardware-attested confidential computing. A small HTTP surface also exposes key creation, signing, and public-key retrieval as MCP tools for agents and the developer portal."
+    },
+    "tools": [
+        {
+            "name": "create_key",
+            "description": "Create a managed key in the vault. The key material is generated and stored inside the enclave; the gateway and the host never see it. Use type 'aes' for an AES-256-GCM wrapping key or 'p256' for an ECDSA-P256 signing key.",
+            "endpoint": "/keys",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Key name. If omitted, a unique name is generated. The name is the KMIP unique identifier."
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": ["aes", "p256"],
+                        "description": "Key type: 'aes' (AES-256-GCM wrap or unwrap) or 'p256' (ECDSA-P256 signing).",
+                        "default": "aes"
+                    }
+                }
+            }
+        },
+        {
+            "name": "sign",
+            "description": "Sign a message with a managed ECDSA-P256 signing key. The signature is produced inside the enclave; the private key never leaves the vault.",
+            "endpoint": "/sign",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "The signing key name."
+                    },
+                    "message_b64": {
+                        "type": "string",
+                        "description": "The message to sign, base64 encoded. The vault hashes it with SHA-256 before signing."
+                    }
+                },
+                "required": ["name", "message_b64"]
+            }
+        },
+        {
+            "name": "get_public_key",
+            "description": "Fetch the public key of a managed signing key, base64 encoded, so a relying party can verify signatures.",
+            "endpoint": "/public",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "The signing key name."
+                    }
+                },
+                "required": ["name"]
+            }
+        }
+    ]
+}
