@@ -10,9 +10,19 @@ package vault
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"strings"
+	"time"
 
 	ratls "enclave-os-mini/clients/go/ratls"
 	vsdk "github.com/Privasys/enclave-vaults-client/go/vault"
@@ -26,12 +36,35 @@ type Config struct {
 	AttServer  string   // attestation server verify endpoint
 	AttToken   string   // aud=attestation-server bearer for quote verification
 	OwnerToken string   // the vault owner's OIDC bearer (aud = the vault audience)
+	OwnerSub   string   // the owner's subject (cosmetic, used in the cnf cert CN)
 }
 
-// Session performs owner-authenticated, in-enclave operations on a vault's keys.
-type Session struct{ cfg Config }
+// KeyGrant is the platform's grant for a new key plus the constellation
+// addressing the gateway needs to create the material directly on the vault.
+type KeyGrant struct {
+	Handle    string
+	Grant     string
+	Endpoints []string
+	MRENCLAVE string
+	AttServer string
+	Threshold int
+}
 
-func New(cfg Config) *Session { return &Session{cfg: cfg} }
+// Grantor mints holder-of-key-bound grants from the platform control plane. The
+// platform authors the policy + catalogues the key; it never sees material.
+type Grantor interface {
+	MintKeyGrant(ctx context.Context, vaultID, name, keyType, cnf string, exportable bool) (*KeyGrant, error)
+	RotateKeyGrant(ctx context.Context, vaultID, name, cnf string) (*KeyGrant, error)
+}
+
+// Session performs owner-authenticated, in-enclave operations on a vault's keys,
+// and (via the platform grantor) creates new keys.
+type Session struct {
+	cfg     Config
+	grantor Grantor
+}
+
+func New(cfg Config, grantor Grantor) *Session { return &Session{cfg: cfg, grantor: grantor} }
 
 // Handle is the constellation handle for a key name in this vault.
 func (s *Session) Handle(name string) string {
@@ -53,6 +86,112 @@ func (s *Session) policy() (*ratls.VerificationPolicy, error) {
 		ReportData: ratls.ReportDataDeterministic,
 		QuoteVerification: &ratls.QuoteVerificationConfig{Endpoint: s.cfg.AttServer, Token: s.cfg.AttToken},
 	}, nil
+}
+
+// verifyPolicy builds a verification policy from explicit constellation values
+// (used at Create time, where the addressing comes from the platform's grant
+// response rather than the gateway's static config).
+func verifyPolicy(mrenclaveHex, attServer, attToken string) (*ratls.VerificationPolicy, error) {
+	mre, err := hex.DecodeString(mrenclaveHex)
+	if err != nil || len(mre) != 32 {
+		return nil, fmt.Errorf("vault mrenclave must be 32 bytes of hex")
+	}
+	return &ratls.VerificationPolicy{
+		TEE:               ratls.TeeTypeSGX,
+		MRENCLAVE:         mre,
+		ReportData:        ratls.ReportDataDeterministic,
+		QuoteVerification: &ratls.QuoteVerificationConfig{Endpoint: attServer, Token: attToken},
+	}, nil
+}
+
+// generateClientCert mints an ephemeral P-256 RA-TLS leaf for holder-of-key
+// binding and returns the cert plus its SHA-256 thumbprint (the cnf the grant is
+// bound to). Mirrors the CLI's secrets path.
+func generateClientCert(sub string) (*tls.Certificate, string, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, "", err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: "kmip-gateway " + sub},
+		NotBefore:    time.Now().Add(-1 * time.Minute),
+		NotAfter:     time.Now().Add(10 * time.Minute),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, "", err
+	}
+	sum := sha256.Sum256(der)
+	cert := &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+	if leaf, perr := x509.ParseCertificate(der); perr == nil {
+		cert.Leaf = leaf
+	}
+	return cert, base64.RawURLEncoding.EncodeToString(sum[:]), nil
+}
+
+// generateMaterial produces fresh key material for a managed (single-enclave)
+// key type. P-256 signing keys are PKCS#8 DER (the vault's ring parser accepts
+// v1); AES-256-GCM keys are 32 random bytes. The material is created whole on one
+// vault and used in-enclave; the gateway holds it only transiently.
+func generateMaterial(keyType string) ([]byte, error) {
+	switch keyType {
+	case "p256":
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("generate p256: %w", err)
+		}
+		return x509.MarshalPKCS8PrivateKey(key)
+	case "aes":
+		material := make([]byte, 32)
+		if _, err := rand.Read(material); err != nil {
+			return nil, fmt.Errorf("generate aes-256 key: %w", err)
+		}
+		return material, nil
+	default:
+		return nil, fmt.Errorf("unsupported key type %q (want p256 or aes)", keyType)
+	}
+}
+
+// Create generates a new managed key, has the platform author its policy +
+// catalogue it + mint a cnf-bound grant, then creates the material directly on
+// the holding vault over RA-TLS. Returns the catalogued handle. exportable
+// defaults to false for operational keys (ops run in-enclave).
+func (s *Session) Create(ctx context.Context, name, keyType string, exportable bool) (string, error) {
+	if s.grantor == nil {
+		return "", fmt.Errorf("no platform grantor configured for key creation")
+	}
+	material, err := generateMaterial(keyType)
+	if err != nil {
+		return "", err
+	}
+	cert, cnf, err := generateClientCert(s.cfg.OwnerSub)
+	if err != nil {
+		return "", fmt.Errorf("client cert: %w", err)
+	}
+	g, err := s.grantor.MintKeyGrant(ctx, s.cfg.VaultID, name, keyType, cnf, exportable)
+	if err != nil {
+		return "", err
+	}
+	if len(g.Endpoints) == 0 {
+		return "", fmt.Errorf("the platform returned no vault endpoints")
+	}
+	verify, err := verifyPolicy(g.MRENCLAVE, g.AttServer, s.cfg.AttToken)
+	if err != nil {
+		return "", err
+	}
+	ep := g.Endpoints[0] // single-enclave: the first (deterministic) vault holds it
+	c, err := vsdk.Dial(ctx, vsdk.VaultRegistration{ID: ep, Endpoint: ep, Status: "static"}, vsdk.DialOptions{ClientCert: cert, VaultPolicy: verify})
+	if err != nil {
+		return "", fmt.Errorf("dial %s: %w", ep, err)
+	}
+	defer c.Close()
+	if _, err := c.CreateKey(ctx, g.Handle, material, g.Grant); err != nil {
+		return "", fmt.Errorf("create key on %s: %w", ep, err)
+	}
+	return g.Handle, nil
 }
 
 func (s *Session) dialOpts() (vsdk.DialOptions, error) {

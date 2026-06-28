@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Privasys/kmip-gateway/internal/platform"
 	"github.com/Privasys/kmip-gateway/internal/vault"
 )
 
@@ -37,7 +38,15 @@ func loadConfig() (vault.Config, string) {
 		AttServer:  os.Getenv("KMIP_ATTESTATION_SERVER"),
 		AttToken:   os.Getenv("KMIP_ATTESTATION_TOKEN"),
 		OwnerToken: os.Getenv("KMIP_OWNER_TOKEN"),
+		OwnerSub:   os.Getenv("KMIP_OWNER_SUB"),
 	}, env("KMIP_LISTEN_ADDR", "0.0.0.0:5696")
+}
+
+func grantorState(g vault.Grantor) string {
+	if g == nil {
+		return "disabled (set KMIP_MGMT_URL to enable)"
+	}
+	return "enabled"
 }
 
 func main() {
@@ -45,9 +54,13 @@ func main() {
 	if cfg.VaultID == "" || len(cfg.Endpoints) == 0 {
 		log.Fatal("kmip-gateway: KMIP_VAULT_ID and KMIP_VAULT_ENDPOINTS are required")
 	}
-	sess := vault.New(cfg)
-	log.Printf("kmip-gateway: fronting vault %s (%d constellation endpoints); KMIP TTLV listener on %s — wire pending (next increment)",
-		cfg.VaultID, len(cfg.Endpoints), addr)
+	var grantor vault.Grantor
+	if mgmt := os.Getenv("KMIP_MGMT_URL"); mgmt != "" {
+		grantor = platform.New(mgmt, cfg.OwnerToken)
+	}
+	sess := vault.New(cfg, grantor)
+	log.Printf("kmip-gateway: fronting vault %s (%d constellation endpoints, key-creation %s); KMIP TTLV listener on %s — wire pending (next increment)",
+		cfg.VaultID, len(cfg.Endpoints), grantorState(grantor), addr)
 	// TODO (increment 3): gemalto/kmip-go TTLV server on `addr`, dispatching
 	// Create/Encrypt/Decrypt/Locate/Destroy/GetAttributes to `sess`.
 	_ = sess
