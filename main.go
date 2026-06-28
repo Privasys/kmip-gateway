@@ -39,14 +39,23 @@ func loadConfig() (vault.Config, string) {
 		}
 	}
 	return vault.Config{
-		VaultID:    os.Getenv("KMIP_VAULT_ID"),
-		Endpoints:  endpoints,
-		MRENCLAVE:  os.Getenv("KMIP_VAULT_MRENCLAVE"),
-		AttServer:  os.Getenv("KMIP_ATTESTATION_SERVER"),
-		AttToken:   os.Getenv("KMIP_ATTESTATION_TOKEN"),
-		OwnerToken: os.Getenv("KMIP_OWNER_TOKEN"),
-		OwnerSub:   os.Getenv("KMIP_OWNER_SUB"),
+		VaultID:       os.Getenv("KMIP_VAULT_ID"),
+		Endpoints:     endpoints,
+		MRENCLAVE:     os.Getenv("KMIP_VAULT_MRENCLAVE"),
+		AttServer:     os.Getenv("KMIP_ATTESTATION_SERVER"),
+		AttToken:      os.Getenv("KMIP_ATTESTATION_TOKEN"),
+		OwnerToken:    os.Getenv("KMIP_OWNER_TOKEN"),
+		OwnerSub:      os.Getenv("KMIP_OWNER_SUB"),
+		ManagerURL:    os.Getenv("KMIP_MANAGER_IDENTITY_URL"),
+		IdentityToken: os.Getenv("KMIP_VAULT_IDENTITY_TOKEN"),
 	}, env("KMIP_LISTEN_ADDR", "0.0.0.0:5696")
+}
+
+func authMode(s *vault.Session) string {
+	if s.UsesAppIdentity() {
+		return "app identity (manager-minted)"
+	}
+	return "owner bearer"
 }
 
 func grantorState(g vault.Grantor) string {
@@ -81,8 +90,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("kmip-gateway: listen %s: %v", addr, err)
 	}
-	log.Printf("kmip-gateway: fronting vault %s (%d constellation endpoints, key-creation %s, vault auth = owner bearer); KMIP TTLV on %s",
-		cfg.VaultID, len(cfg.Endpoints), grantorState(grantor), addr)
+	log.Printf("kmip-gateway: fronting vault %s (%d constellation endpoints, key-creation %s, vault auth = %s); KMIP TTLV on %s",
+		cfg.VaultID, len(cfg.Endpoints), grantorState(grantor), authMode(sess), addr)
 	if err := kmipsrv.New(sess).Serve(l); err != nil {
 		log.Fatalf("kmip-gateway: serve: %v", err)
 	}

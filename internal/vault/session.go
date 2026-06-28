@@ -26,6 +26,8 @@ import (
 
 	ratls "enclave-os-mini/clients/go/ratls"
 	vsdk "github.com/Privasys/enclave-vaults-client/go/vault"
+
+	"github.com/Privasys/kmip-gateway/internal/identity"
 )
 
 // Config addresses one vault (the one this gateway fronts) + the owner identity.
@@ -37,6 +39,15 @@ type Config struct {
 	AttToken   string   // aud=attestation-server bearer for quote verification
 	OwnerToken string   // the vault owner's OIDC bearer (aud = the vault audience)
 	OwnerSub   string   // the owner's subject (cosmetic, used in the cnf cert CN)
+
+	// App identity (preferred over the bearer when set). When the gateway runs as
+	// a Privasys confidential app, the in-TD manager mints its vault RA-TLS
+	// identity on demand (stamping the gateway's app id, OID 3.6). ManagerURL is
+	// the manager's mint endpoint and IdentityToken is the per-app mint-token the
+	// launcher injects. With these set, the gateway authenticates to the vault as
+	// the app and no owner bearer sits in the data path.
+	ManagerURL    string
+	IdentityToken string
 }
 
 // KeyGrant is the platform's grant for a new key plus the constellation
@@ -57,17 +68,29 @@ type Grantor interface {
 	RotateKeyGrant(ctx context.Context, vaultID, name, cnf string) (*KeyGrant, error)
 }
 
-// Session performs owner-authenticated, in-enclave operations on a vault's keys,
-// and (via the platform grantor) creates new keys.
+// Session performs in-enclave operations on a vault's keys, and (via the platform
+// grantor) creates new keys. It authenticates to the vault either as the app (a
+// manager-minted RA-TLS identity) or as the owner (an OIDC bearer).
 type Session struct {
 	cfg     Config
 	grantor Grantor
+	minter  *identity.ManagerMinter // non-nil => app-identity vault auth
 }
 
-// New builds a session.
+// New builds a session. When the config points at the manager mint endpoint, the
+// gateway authenticates to the vault with its manager-minted app identity;
+// otherwise it falls back to the owner bearer.
 func New(cfg Config, grantor Grantor) *Session {
-	return &Session{cfg: cfg, grantor: grantor}
+	s := &Session{cfg: cfg, grantor: grantor}
+	if cfg.ManagerURL != "" && cfg.IdentityToken != "" {
+		s.minter = identity.New(cfg.ManagerURL, cfg.IdentityToken)
+	}
+	return s
 }
+
+// UsesAppIdentity reports whether the gateway authenticates to the vault with its
+// manager-minted app identity (rather than the owner bearer).
+func (s *Session) UsesAppIdentity() bool { return s.minter != nil }
 
 // Handle is the constellation handle for a key name in this vault.
 func (s *Session) Handle(name string) string {
@@ -202,11 +225,13 @@ func (s *Session) dialOpts() (vsdk.DialOptions, error) {
 	if err != nil {
 		return vsdk.DialOptions{}, err
 	}
-	// Data-plane ops authenticate as the vault OWNER (an OIDC bearer), like the
-	// CLI. The gateway cannot present the app's attested TEE identity itself: the
-	// vault requires a fresh per-connection TDX quote, which only the in-TD
-	// manager can mint. Authenticating as the app (MR_APP) is a future enhancement
-	// that needs a manager-mediated attested vault egress.
+	if s.minter != nil {
+		// App identity: the manager mints a fresh RA-TLS identity (stamping the
+		// gateway's app id) per connection; the vault authorises by that app id.
+		// No owner bearer in the data path.
+		return vsdk.DialOptions{GetClientCertificate: s.minter.GetClientCertificate(), VaultPolicy: p}, nil
+	}
+	// Otherwise authenticate as the vault OWNER with an OIDC bearer, like the CLI.
 	return vsdk.DialOptions{AuthToken: staticToken(s.cfg.OwnerToken), VaultPolicy: p}, nil
 }
 
