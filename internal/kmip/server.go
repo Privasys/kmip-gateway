@@ -17,17 +17,29 @@ import (
 	kmip "github.com/gemalto/kmip-go"
 	"github.com/gemalto/kmip-go/kmip14"
 
-	"github.com/Privasys/kmip-gateway/internal/vault"
+	vsdk "github.com/Privasys/enclave-vaults-client/go/vault"
 )
+
+// Vault is the in-enclave key surface the KMIP front-end dispatches to. The
+// concrete implementation is *vault.Session (dialing the constellation over
+// RA-TLS); an interface keeps the wire layer testable.
+type Vault interface {
+	Create(ctx context.Context, name, keyType string, exportable bool) (string, error)
+	Wrap(ctx context.Context, name string, plaintext []byte) (ct, iv []byte, err error)
+	Unwrap(ctx context.Context, name string, ciphertext, iv []byte) ([]byte, error)
+	Sign(ctx context.Context, name string, message []byte) (sig []byte, alg string, err error)
+	GetKeyInfo(ctx context.Context, name string) (vsdk.KeyInfo, error)
+	Destroy(ctx context.Context, name string) error
+}
 
 // Server is a KMIP TTLV server fronting one vault session.
 type Server struct {
-	sess *vault.Session
+	sess Vault
 	srv  kmip.Server
 }
 
 // New builds a KMIP server that dispatches to sess.
-func New(sess *vault.Session) *Server {
+func New(sess Vault) *Server {
 	s := &Server{sess: sess}
 	mux := &kmip.OperationMux{}
 	mux.Handle(kmip14.OperationDiscoverVersions, &kmip.DiscoverVersionsHandler{
@@ -37,7 +49,7 @@ func New(sess *vault.Session) *Server {
 			{ProtocolVersionMajor: 1, ProtocolVersionMinor: 2},
 		},
 	})
-	mux.Handle(kmip14.OperationCreate, &kmip.CreateHandler{Create: s.handleCreate})
+	mux.Handle(kmip14.OperationCreate, kmip.ItemHandlerFunc(s.handleCreate))
 	mux.Handle(kmip14.OperationDestroy, &kmip.DestroyHandler{Destroy: s.handleDestroy})
 	mux.Handle(kmip14.OperationEncrypt, kmip.ItemHandlerFunc(s.handleEncrypt))
 	mux.Handle(kmip14.OperationDecrypt, kmip.ItemHandlerFunc(s.handleDecrypt))
@@ -66,8 +78,12 @@ func fail(reason kmip14.ResultReason, format string, args ...interface{}) error 
 // (or ObjectType) selects the vault key type: AES-256-GCM for symmetric keys,
 // ECDSA-P256 for asymmetric/private keys. The returned UniqueIdentifier is the
 // key name.
-func (s *Server) handleCreate(ctx context.Context, p *kmip.CreateRequestPayload) (*kmip.CreateResponsePayload, error) {
-	keyType, err := keyTypeFor(p)
+func (s *Server) handleCreate(ctx context.Context, req *kmip.Request) (*kmip.ResponseBatchItem, error) {
+	var p kmip.CreateRequestPayload
+	if err := req.DecodePayload(&p); err != nil {
+		return nil, fail(kmip14.ResultReasonInvalidField, "decode create: %v", err)
+	}
+	keyType, err := keyTypeFor(&p)
 	if err != nil {
 		return nil, err
 	}
@@ -75,18 +91,14 @@ func (s *Server) handleCreate(ctx context.Context, p *kmip.CreateRequestPayload)
 	if name == "" {
 		name = generateName(keyType)
 	}
-	handle, err := s.sess.Create(ctx, name, keyType, false)
-	if err != nil {
+	if _, err := s.sess.Create(ctx, name, keyType, false); err != nil {
 		return nil, fail(kmip14.ResultReasonGeneralFailure, "create %q: %v", name, err)
 	}
-	_ = handle // catalogued handle; the KMIP UID is the name
-	ta := &kmip.TemplateAttribute{}
-	ta.Append(kmip14.TagUniqueIdentifier, name)
-	return &kmip.CreateResponsePayload{
-		ObjectType:        p.ObjectType,
-		UniqueIdentifier:  name,
-		TemplateAttribute: ta,
-	}, nil
+	req.IDPlaceholder = name
+	return &kmip.ResponseBatchItem{ResponsePayload: &kmip.CreateResponsePayload{
+		ObjectType:       p.ObjectType,
+		UniqueIdentifier: name,
+	}}, nil
 }
 
 // ---- Destroy ---------------------------------------------------------------
