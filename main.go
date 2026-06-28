@@ -10,9 +10,11 @@ package main
 
 import (
 	"log"
+	"net"
 	"os"
 	"strings"
 
+	kmipsrv "github.com/Privasys/kmip-gateway/internal/kmip"
 	"github.com/Privasys/kmip-gateway/internal/platform"
 	"github.com/Privasys/kmip-gateway/internal/vault"
 )
@@ -59,10 +61,13 @@ func main() {
 		grantor = platform.New(mgmt, cfg.OwnerToken)
 	}
 	sess := vault.New(cfg, grantor)
-	log.Printf("kmip-gateway: fronting vault %s (%d constellation endpoints, key-creation %s); KMIP TTLV listener on %s — wire pending (next increment)",
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("kmip-gateway: listen %s: %v", addr, err)
+	}
+	log.Printf("kmip-gateway: fronting vault %s (%d constellation endpoints, key-creation %s); KMIP TTLV listener on %s",
 		cfg.VaultID, len(cfg.Endpoints), grantorState(grantor), addr)
-	// TODO (increment 3): gemalto/kmip-go TTLV server on `addr`, dispatching
-	// Create/Encrypt/Decrypt/Locate/Destroy/GetAttributes to `sess`.
-	_ = sess
-	select {}
+	if err := kmipsrv.New(sess).Serve(l); err != nil {
+		log.Fatalf("kmip-gateway: serve: %v", err)
+	}
 }
