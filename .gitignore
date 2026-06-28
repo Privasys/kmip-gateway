@@ -1,0 +1,8 @@
+# Build output
+/kmip-gateway
+/kmip-gateway.exe
+/dist/
+
+# Local scratch
+*.out
+*.test
