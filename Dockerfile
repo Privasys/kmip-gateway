@@ -35,8 +35,9 @@ RUN git clone https://github.com/Privasys/enclave-vaults-client /siblings/enclav
     git -C /siblings/enclave-vaults-client checkout "${ENCLAVE_VAULTS_CLIENT_REF}"
 
 WORKDIR /src
+# Repoint the local replace paths at the cloned siblings. Run once to download
+# dependencies, then again after COPY . . (which restores the original go.mod).
 COPY go.mod go.sum ./
-# Repoint the local replace paths at the cloned siblings.
 RUN sed -i \
       -e 's|\.\./ra-tls-clients/go|/siblings/ra-tls-clients/go|' \
       -e 's|\.\./enclave-vaults-client/go|/siblings/enclave-vaults-client/go|' \
@@ -44,7 +45,11 @@ RUN sed -i \
     go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 go build -tags ratls -o /kmip-gateway .
+RUN sed -i \
+      -e 's|\.\./ra-tls-clients/go|/siblings/ra-tls-clients/go|' \
+      -e 's|\.\./enclave-vaults-client/go|/siblings/enclave-vaults-client/go|' \
+      go.mod && \
+    CGO_ENABLED=0 go build -tags ratls -o /kmip-gateway .
 
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates
