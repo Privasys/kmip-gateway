@@ -243,17 +243,37 @@ func (s *Session) Create(ctx context.Context, name, keyType string, exportable b
 }
 
 func (s *Session) dialOpts() (vsdk.DialOptions, error) {
+	if s.minter != nil {
+		// App identity: present a manager-minted RA-TLS identity (the gateway's app
+		// id) instead of a bearer. Send a fresh client nonce in the ClientHello so
+		// the vault enters bidirectional-challenge mode and issues its own challenge
+		// in the CertificateRequest, which the minted client cert binds to; the same
+		// nonce binds the vault's server quote to this connection.
+		mre, err := hex.DecodeString(s.cfg.MRENCLAVE)
+		if err != nil || len(mre) != 32 {
+			return vsdk.DialOptions{}, fmt.Errorf("vault mrenclave must be 32 bytes of hex")
+		}
+		nonce := make([]byte, 32)
+		if _, err := rand.Read(nonce); err != nil {
+			return vsdk.DialOptions{}, fmt.Errorf("generate challenge nonce: %w", err)
+		}
+		return vsdk.DialOptions{
+			Challenge:            nonce,
+			GetClientCertificate: s.minter.GetClientCertificate(),
+			VaultPolicy: &ratls.VerificationPolicy{
+				TEE:               ratls.TeeTypeSGX,
+				MRENCLAVE:         mre,
+				ReportData:        ratls.ReportDataChallengeResponse,
+				Nonce:             nonce,
+				QuoteVerification: &ratls.QuoteVerificationConfig{Endpoint: s.cfg.AttServer, Token: s.cfg.AttToken},
+			},
+		}, nil
+	}
+	// Otherwise authenticate as the vault OWNER with an OIDC bearer, like the CLI.
 	p, err := s.policy()
 	if err != nil {
 		return vsdk.DialOptions{}, err
 	}
-	if s.minter != nil {
-		// App identity: the manager mints a fresh RA-TLS identity (stamping the
-		// gateway's app id) per connection; the vault authorises by that app id.
-		// No owner bearer in the data path.
-		return vsdk.DialOptions{GetClientCertificate: s.minter.GetClientCertificate(), VaultPolicy: p}, nil
-	}
-	// Otherwise authenticate as the vault OWNER with an OIDC bearer, like the CLI.
 	return vsdk.DialOptions{AuthToken: staticToken(s.cfg.OwnerToken), VaultPolicy: p}, nil
 }
 
