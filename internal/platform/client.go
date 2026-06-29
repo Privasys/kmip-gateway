@@ -183,6 +183,10 @@ type OperatedVault struct {
 	MRENCLAVE        string
 	AttServer        string
 	AttestationToken string
+	// AttTokenExpiresAt is the unix-seconds expiry of AttestationToken (0 if
+	// unknown). The gateway refreshes (re-discovers) before this so the
+	// short-lived, possibly near-expiry vended token never lapses mid-operation.
+	AttTokenExpiresAt int64
 }
 
 // DiscoverOperated fetches GET /api/v1/keyvaults/operated with the gateway's
@@ -215,7 +219,8 @@ func (c *Client) DiscoverOperated(ctx context.Context) (*OperatedVault, error) {
 			Mrenclave         string   `json:"mrenclave"`
 			AttestationServer string   `json:"attestation_server"`
 		} `json:"constellation"`
-		AttestationToken string `json:"attestation_token"`
+		AttestationToken          string `json:"attestation_token"`
+		AttestationTokenExpiresAt int64  `json:"attestation_token_expires_at"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, fmt.Errorf("decode operated vaults: %w", err)
@@ -228,7 +233,8 @@ func (c *Client) DiscoverOperated(ctx context.Context) (*OperatedVault, error) {
 		OwnerSub:         out.Vaults[0].OwnerSub,
 		Endpoints:        out.Constellation.Endpoints,
 		MRENCLAVE:        out.Constellation.Mrenclave,
-		AttServer:        out.Constellation.AttestationServer,
-		AttestationToken: out.AttestationToken,
+		AttServer:         out.Constellation.AttestationServer,
+		AttestationToken:  out.AttestationToken,
+		AttTokenExpiresAt: out.AttestationTokenExpiresAt,
 	}, nil
 }

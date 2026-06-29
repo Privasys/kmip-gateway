@@ -107,31 +107,56 @@ func main() {
 }
 
 // selfConfigureLoop discovers the operated vault by attestation and installs the
-// vault session, then refreshes periodically so the discovery-vended
-// attestation-server token never expires under a long-running gateway.
+// vault session, then re-discovers BEFORE the discovery-vended attestation token
+// expires so the gateway's vault dials never lapse. A panic in any iteration is
+// recovered so a transient hiccup can never crash the long-running gateway.
 func selfConfigureLoop(client *platform.Client, pc platformConfig, install func(*vault.Session)) {
-	const refresh = 30 * time.Minute
+	const (
+		maxRefresh   = 30 * time.Minute
+		minRefresh   = time.Minute
+		retryBackoff = 30 * time.Second
+		expiryMargin = 2 * time.Minute
+	)
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		op, err := client.DiscoverOperated(ctx)
-		cancel()
-		if err != nil {
-			log.Printf("kmip-gateway: self-config discovery: %v; retrying in 30s", err)
-			time.Sleep(30 * time.Second)
-			continue
-		}
-		install(vault.New(vault.Config{
-			VaultID:       op.VaultID,
-			OwnerSub:      op.OwnerSub,
-			Endpoints:     op.Endpoints,
-			MRENCLAVE:     op.MRENCLAVE,
-			AttServer:     op.AttServer,
-			AttToken:      op.AttestationToken,
-			AppID:         pc.appID,
-			ManagerURL:    pc.managerURL,
-			IdentityToken: pc.identityToken,
-		}, client))
-		log.Printf("kmip-gateway: configured (attested) for vault %s (%d endpoints, vault auth = app identity, no owner bearer)", op.VaultID, len(op.Endpoints))
-		time.Sleep(refresh)
+		sleep := func() time.Duration {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("kmip-gateway: self-config panic recovered: %v", r)
+				}
+			}()
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			op, err := client.DiscoverOperated(ctx)
+			cancel()
+			if err != nil {
+				log.Printf("kmip-gateway: self-config discovery: %v; retrying in %s", err, retryBackoff)
+				return retryBackoff
+			}
+			install(vault.New(vault.Config{
+				VaultID:       op.VaultID,
+				OwnerSub:      op.OwnerSub,
+				Endpoints:     op.Endpoints,
+				MRENCLAVE:     op.MRENCLAVE,
+				AttServer:     op.AttServer,
+				AttToken:      op.AttestationToken,
+				AppID:         pc.appID,
+				ManagerURL:    pc.managerURL,
+				IdentityToken: pc.identityToken,
+			}, client))
+			// Refresh before the vended token expires (it may be near the end of
+			// its cached life); a short token thus self-corrects to a fresh one on
+			// the next, near-immediate re-discovery.
+			next := maxRefresh
+			if op.AttTokenExpiresAt > 0 {
+				if d := time.Until(time.Unix(op.AttTokenExpiresAt, 0).Add(-expiryMargin)); d < next {
+					next = d
+				}
+			}
+			if next < minRefresh {
+				next = minRefresh
+			}
+			log.Printf("kmip-gateway: configured (attested) for vault %s (%d endpoints, app identity, no owner bearer); refresh in %s", op.VaultID, len(op.Endpoints), next.Round(time.Second))
+			return next
+		}()
+		time.Sleep(sleep)
 	}
 }
