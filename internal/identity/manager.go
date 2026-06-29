@@ -75,6 +75,23 @@ func (m *ManagerMinter) GetClientCertificate() func(*tls.CertificateRequestInfo)
 	}
 }
 
+// MintIdentityDER asks the manager to mint a one-shot identity bound to the
+// given challenge and returns the leaf certificate DER. Used to present the
+// gateway's attested identity to the control plane in a header (the control
+// plane verifies the TDX quote + app-id OID 3.6 + the report_data binding to
+// this challenge), so the gateway authenticates to mgmt-service by attestation
+// instead of an owner bearer.
+func (m *ManagerMinter) MintIdentityDER(ctx context.Context, challenge []byte) ([]byte, error) {
+	cert, err := m.mint(ctx, challenge)
+	if err != nil {
+		return nil, err
+	}
+	if len(cert.Certificate) == 0 {
+		return nil, errors.New("identity: minted certificate has no leaf")
+	}
+	return cert.Certificate[0], nil
+}
+
 func (m *ManagerMinter) mint(ctx context.Context, challenge []byte) (*tls.Certificate, error) {
 	body, err := json.Marshal(map[string]string{
 		"challenge_b64": base64.StdEncoding.EncodeToString(challenge),

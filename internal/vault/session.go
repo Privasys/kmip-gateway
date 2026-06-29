@@ -65,10 +65,11 @@ type KeyGrant struct {
 // Grantor mints holder-of-key-bound grants from the platform control plane. The
 // platform authors the policy + catalogues the key; it never sees material.
 type Grantor interface {
-	// MintKeyGrant authors the key policy and mints a creation grant. operatorAppID,
-	// when set, has the platform grant the key-type operation to that app's TEE
-	// principal so the running app can use the key in-enclave (app identity).
-	MintKeyGrant(ctx context.Context, vaultID, name, keyType, cnf, operatorAppID string, exportable bool) (*KeyGrant, error)
+	// MintKeyGrant authors the key policy and mints a creation grant. The platform
+	// derives the operating app (whose TEE principal is granted the key-type op, so
+	// the running app can use the key in-enclave) from the gateway's attested
+	// app-id, so no operator id is passed here.
+	MintKeyGrant(ctx context.Context, vaultID, name, keyType, cnf string, exportable bool) (*KeyGrant, error)
 	RotateKeyGrant(ctx context.Context, vaultID, name, cnf string) (*KeyGrant, error)
 }
 
@@ -213,13 +214,10 @@ func (s *Session) Create(ctx context.Context, name, keyType string, exportable b
 	if err != nil {
 		return "", fmt.Errorf("client cert: %w", err)
 	}
-	// In app-identity mode, delegate the key-type op to the gateway's own app TEE
-	// so it can use the key over its manager-minted identity.
-	operatorAppID := ""
-	if s.minter != nil {
-		operatorAppID = s.cfg.AppID
-	}
-	g, err := s.grantor.MintKeyGrant(ctx, s.cfg.VaultID, name, vaultKeyType(keyType), cnf, operatorAppID, exportable)
+	// The platform derives the operating app (the gateway's own app TEE, granted
+	// the key-type op so it can use the key over its manager-minted identity) from
+	// the gateway's attested app-id on the control-plane call.
+	g, err := s.grantor.MintKeyGrant(ctx, s.cfg.VaultID, name, vaultKeyType(keyType), cnf, exportable)
 	if err != nil {
 		return "", err
 	}
