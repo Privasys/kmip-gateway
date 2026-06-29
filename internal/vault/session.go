@@ -162,6 +162,18 @@ func generateClientCert(sub string) (*tls.Certificate, string, error) {
 	return cert, base64.RawURLEncoding.EncodeToString(sum[:]), nil
 }
 
+// vaultKeyType maps the gateway's internal key type ("p256"/"aes") to the vault
+// key-type enum the platform expects when minting the grant.
+func vaultKeyType(keyType string) string {
+	switch keyType {
+	case "p256":
+		return string(vsdk.P256SigningKey)
+	case "aes":
+		return string(vsdk.Aes256GcmKey)
+	}
+	return keyType
+}
+
 // generateMaterial produces fresh key material for a managed (single-enclave)
 // key type. P-256 signing keys are PKCS#8 DER (the vault's ring parser accepts
 // v1); AES-256-GCM keys are 32 random bytes. The material is created whole on one
@@ -207,7 +219,7 @@ func (s *Session) Create(ctx context.Context, name, keyType string, exportable b
 	if s.minter != nil {
 		operatorAppID = s.cfg.AppID
 	}
-	g, err := s.grantor.MintKeyGrant(ctx, s.cfg.VaultID, name, keyType, cnf, operatorAppID, exportable)
+	g, err := s.grantor.MintKeyGrant(ctx, s.cfg.VaultID, name, vaultKeyType(keyType), cnf, operatorAppID, exportable)
 	if err != nil {
 		return "", err
 	}
