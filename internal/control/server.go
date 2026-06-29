@@ -36,6 +36,10 @@ type ConfigRequest struct {
 	MgmtURL          string `json:"mgmt_url"`
 	OwnerToken       string `json:"owner_token"`
 	AttestationToken string `json:"attestation_token"`
+	// UseAppIdentity selects the no-bearer vault auth: the gateway authenticates
+	// to the vault with its manager-minted RA-TLS identity (app id) rather than the
+	// owner bearer. Selectable here because the platform does not inject app env.
+	UseAppIdentity bool `json:"use_app_identity"`
 }
 
 // Server is the HTTP management + health surface. The vault session is installed

@@ -33,6 +33,10 @@ import (
 // version is set at build time via -ldflags.
 var version = "untagged"
 
+// defaultManagerMintURL is the in-TD manager's vault-identity mint endpoint,
+// reachable over loopback (the manager listens on :9443).
+const defaultManagerMintURL = "http://localhost:9443/api/v1/vault-identity"
+
 func env(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
@@ -123,6 +127,17 @@ func main() {
 			return err
 		}
 		var grantor vault.Grantor = client
+		// App-identity (no bearer in the data path) is selected here: point the
+		// session at the manager mint endpoint + the per-app token. Otherwise the
+		// session authenticates to the vault as the owner.
+		managerMintURL, identityToken := "", ""
+		if req.UseAppIdentity {
+			managerMintURL = pc.managerURL
+			if managerMintURL == "" {
+				managerMintURL = defaultManagerMintURL
+			}
+			identityToken = pc.identityToken
+		}
 		sess := vault.New(vault.Config{
 			VaultID:       req.VaultID,
 			Endpoints:     con.Endpoints,
@@ -131,8 +146,8 @@ func main() {
 			AttToken:      req.AttestationToken,
 			OwnerToken:    req.OwnerToken,
 			AppID:         pc.appID,
-			ManagerURL:    pc.managerURL,
-			IdentityToken: pc.identityToken,
+			ManagerURL:    managerMintURL,
+			IdentityToken: identityToken,
 		}, grantor)
 		log.Printf("kmip-gateway: configured for vault %s (%d constellation endpoints, vault auth = %s)",
 			req.VaultID, len(con.Endpoints), authMode(sess))
