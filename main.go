@@ -105,14 +105,24 @@ func main() {
 		if mgmtURL == "" {
 			mgmtURL = os.Getenv("KMIP_MGMT_URL")
 		}
-		grantor := newGrantor(mgmtURL, req.OwnerToken)
-		if grantor == nil {
+		if mgmtURL == "" {
 			return fmt.Errorf("mgmt_url is required (in the request or KMIP_MGMT_URL) to discover the constellation")
 		}
-		con, err := platform.New(mgmtURL, req.OwnerToken).Directory(context.Background())
+		client := platform.New(mgmtURL, req.OwnerToken)
+		// Gate: only the vault owner may configure the gateway, so a stray caller
+		// cannot point it at a vault they do not own.
+		owns, err := client.OwnsVault(context.Background(), req.VaultID)
+		if err != nil {
+			return fmt.Errorf("verify vault ownership: %w", err)
+		}
+		if !owns {
+			return fmt.Errorf("owner_token cannot access vault %s", req.VaultID)
+		}
+		con, err := client.Directory(context.Background())
 		if err != nil {
 			return err
 		}
+		var grantor vault.Grantor = client
 		sess := vault.New(vault.Config{
 			VaultID:       req.VaultID,
 			Endpoints:     con.Endpoints,

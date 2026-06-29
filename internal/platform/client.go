@@ -114,6 +114,40 @@ func (c *Client) MintKeyGrant(ctx context.Context, vaultID, name, keyType, cnf, 
 	return r.toKeyGrant(), nil
 }
 
+// OwnsVault reports whether the bearer's account can access the given vault id
+// (the vault appears in its key-vault list). Used to gate /configure so only the
+// vault owner can point the gateway at a vault.
+func (c *Client) OwnsVault(ctx context.Context, vaultID string) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/v1/keyvaults", nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return false, fmt.Errorf("list key-vaults %s: %s", resp.Status, strings.TrimSpace(string(data)))
+	}
+	var out struct {
+		Vaults []struct {
+			ID string `json:"id"`
+		} `json:"vaults"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return false, fmt.Errorf("decode key-vaults: %w", err)
+	}
+	for _, v := range out.Vaults {
+		if v.ID == vaultID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // Constellation is the active vault constellation's addressing, discovered from
 // the platform directory (so the gateway never hard-codes endpoints or the pin).
 type Constellation struct {
