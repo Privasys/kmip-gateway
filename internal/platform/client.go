@@ -95,7 +95,7 @@ func (c *Client) post(ctx context.Context, path string, body interface{}) (*gran
 // MintKeyGrant asks the platform to author the policy, catalogue a new key and
 // mint a grant bound to the gateway's holder-of-key cnf. keyType is one of
 // "p256", "aes", "secret" (empty = platform default).
-func (c *Client) MintKeyGrant(ctx context.Context, vaultID, name, keyType, cnf string, exportable bool) (*vault.KeyGrant, error) {
+func (c *Client) MintKeyGrant(ctx context.Context, vaultID, name, keyType, cnf, operatorAppID string, exportable bool) (*vault.KeyGrant, error) {
 	body := map[string]interface{}{
 		"name":         name,
 		"cnf_x5t_s256": cnf,
@@ -103,6 +103,9 @@ func (c *Client) MintKeyGrant(ctx context.Context, vaultID, name, keyType, cnf s
 	}
 	if keyType != "" {
 		body["key_type"] = keyType
+	}
+	if operatorAppID != "" {
+		body["operator_app_id"] = operatorAppID
 	}
 	r, err := c.post(ctx, "/api/v1/keyvaults/"+url.PathEscape(vaultID)+"/keys", body)
 	if err != nil {

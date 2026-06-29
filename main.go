@@ -46,6 +46,7 @@ func loadConfig() (vault.Config, string) {
 		AttToken:   os.Getenv("KMIP_ATTESTATION_TOKEN"),
 		OwnerToken: os.Getenv("KMIP_OWNER_TOKEN"),
 		OwnerSub:   os.Getenv("KMIP_OWNER_SUB"),
+		AppID:      env("KMIP_APP_ID", os.Getenv("PRIVASYS_APP_ID")),
 		ManagerURL: os.Getenv("KMIP_MANAGER_IDENTITY_URL"),
 		// App-identity is opted in by setting KMIP_MANAGER_IDENTITY_URL; the
 		// per-app token is the platform-standard PRIVASYS_CONTAINER_TOKEN the

@@ -39,6 +39,7 @@ type Config struct {
 	AttToken   string   // aud=attestation-server bearer for quote verification
 	OwnerToken string   // the vault owner's OIDC bearer (aud = the vault audience)
 	OwnerSub   string   // the owner's subject (cosmetic, used in the cnf cert CN)
+	AppID      string   // the gateway's own app id; when set with app identity, keys it creates grant the op to this app's TEE principal
 
 	// App identity (preferred over the bearer when set). When the gateway runs as
 	// a Privasys confidential app, the in-TD manager mints its vault RA-TLS
@@ -64,7 +65,10 @@ type KeyGrant struct {
 // Grantor mints holder-of-key-bound grants from the platform control plane. The
 // platform authors the policy + catalogues the key; it never sees material.
 type Grantor interface {
-	MintKeyGrant(ctx context.Context, vaultID, name, keyType, cnf string, exportable bool) (*KeyGrant, error)
+	// MintKeyGrant authors the key policy and mints a creation grant. operatorAppID,
+	// when set, has the platform grant the key-type operation to that app's TEE
+	// principal so the running app can use the key in-enclave (app identity).
+	MintKeyGrant(ctx context.Context, vaultID, name, keyType, cnf, operatorAppID string, exportable bool) (*KeyGrant, error)
 	RotateKeyGrant(ctx context.Context, vaultID, name, cnf string) (*KeyGrant, error)
 }
 
@@ -197,7 +201,13 @@ func (s *Session) Create(ctx context.Context, name, keyType string, exportable b
 	if err != nil {
 		return "", fmt.Errorf("client cert: %w", err)
 	}
-	g, err := s.grantor.MintKeyGrant(ctx, s.cfg.VaultID, name, keyType, cnf, exportable)
+	// In app-identity mode, delegate the key-type op to the gateway's own app TEE
+	// so it can use the key over its manager-minted identity.
+	operatorAppID := ""
+	if s.minter != nil {
+		operatorAppID = s.cfg.AppID
+	}
+	g, err := s.grantor.MintKeyGrant(ctx, s.cfg.VaultID, name, keyType, cnf, operatorAppID, exportable)
 	if err != nil {
 		return "", err
 	}
