@@ -51,7 +51,9 @@ The key policy then grants the operations to the gateway's app TEE principal
 
 ## Surfaces
 
-- **KMIP TTLV** on `KMIP_LISTEN_ADDR` (default `:5696`) for KMIP clients.
+- **KMIP TTLV over TLS** on `KMIP_LISTEN_ADDR` (default `:5696`) for KMIP clients.
+  Provide a server certificate with `KMIP_TLS_CERT`/`KMIP_TLS_KEY`, or the gateway
+  generates a self-signed one at startup and logs its fingerprint to pin.
 - **HTTP** on `$PORT` (the manager-injected app port, default `:8080`):
   `GET /health`, `GET /version`, and the MCP tools (`POST /keys`, `POST /sign`,
   `POST /public`).
@@ -68,6 +70,7 @@ The key policy then grants the operations to the gateway's app TEE principal
 | `KMIP_MGMT_URL` | management-service origin (enables key creation via minted grants) |
 | `KMIP_OWNER_TOKEN` | the vault owner's OIDC bearer |
 | `KMIP_LISTEN_ADDR` | KMIP listen address (default `0.0.0.0:5696`) |
+| `KMIP_TLS_CERT` / `KMIP_TLS_KEY` | KMIP server certificate (PEM); self-signed if unset |
 | `PORT` | HTTP surface port, injected by the manager (default `8080`) |
 
 ## Built with

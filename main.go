@@ -9,8 +9,8 @@
 package main
 
 import (
+	"crypto/tls"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -90,12 +90,16 @@ func main() {
 		}
 	}()
 
-	// KMIP TTLV surface.
-	l, err := net.Listen("tcp", addr)
+	// KMIP TTLV surface (TLS — KMIP clients connect over TLS).
+	tlsCfg, err := kmipTLSConfig(os.Getenv("KMIP_TLS_CERT"), os.Getenv("KMIP_TLS_KEY"))
+	if err != nil {
+		log.Fatalf("kmip-gateway: %v", err)
+	}
+	l, err := tls.Listen("tcp", addr, tlsCfg)
 	if err != nil {
 		log.Fatalf("kmip-gateway: listen %s: %v", addr, err)
 	}
-	log.Printf("kmip-gateway: fronting vault %s (%d constellation endpoints, key-creation %s, vault auth = %s); KMIP TTLV on %s",
+	log.Printf("kmip-gateway: fronting vault %s (%d constellation endpoints, key-creation %s, vault auth = %s); KMIP TTLV over TLS on %s",
 		cfg.VaultID, len(cfg.Endpoints), grantorState(grantor), authMode(sess), addr)
 	if err := kmipsrv.New(sess).Serve(l); err != nil {
 		log.Fatalf("kmip-gateway: serve: %v", err)
