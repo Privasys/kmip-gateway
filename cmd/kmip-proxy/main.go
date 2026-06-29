@@ -225,6 +225,30 @@ func (s *session) relay(msg []byte) ([]byte, error) {
 	if resp.StatusCode/100 != 2 {
 		return nil, fmt.Errorf("kmip %s: %s", resp.Status, strings.TrimSpace(string(data)))
 	}
+	// The relay may seal the response either as a single envelope or as a stream
+	// of length-prefixed frames ([4-byte big-endian length][CBOR envelope]...),
+	// each with its own s2c counter. Handle both; concatenate the plaintexts.
+	if strings.HasPrefix(resp.Header.Get("Content-Type"), "application/privasys-sealed-stream+cbor") {
+		var out []byte
+		for off := 0; off+4 <= len(data); {
+			flen := int(binary.BigEndian.Uint32(data[off : off+4]))
+			off += 4
+			if flen == 0 || off+flen > len(data) {
+				break
+			}
+			rctr, rct, derr := decodeSealed(data[off : off+flen])
+			if derr != nil {
+				return nil, fmt.Errorf("decode sealed frame: %w", derr)
+			}
+			off += flen
+			pt, oerr := s.aead.Open(nil, makeNonce(s.s2cPrefix[:], rctr), rct, ad)
+			if oerr != nil {
+				return nil, fmt.Errorf("open sealed frame: %w", oerr)
+			}
+			out = append(out, pt...)
+		}
+		return out, nil
+	}
 	rctr, rct, err := decodeSealed(data)
 	if err != nil {
 		return nil, fmt.Errorf("decode sealed response: %w", err)
