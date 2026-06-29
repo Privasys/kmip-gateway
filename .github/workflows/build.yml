@@ -1,0 +1,85 @@
+# Copyright (c) Privasys. All rights reserved.
+# Licensed under the GNU Affero General Public License v3.0.
+#
+# Build & push the kmip-gateway image to GHCR. Each push of a `v*` tag
+# produces ghcr.io/privasys/kmip-gateway:<tag> and a :<tag>-<sha> immutable
+# tag, which the platform deploys as a confidential container-app and pins
+# at OID 3.2 (the manifest digest).
+
+name: Build & Push kmip-gateway
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/privasys/kmip-gateway
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build-contract gate: the platform runs containers on the host network
+      # and injects a unique $PORT per app; the app MUST serve /health there.
+      # Dummy vault config lets the gateway start (it does not dial the vault
+      # until a KMIP request), so the smoke test exercises the health surface.
+      - name: Smoke test — must listen on injected $PORT
+        run: |
+          set -euo pipefail
+          docker build -t kg-smoke .
+          PORT=18080
+          docker run -d --name kg-smoke \
+            -e PORT=$PORT \
+            -e KMIP_VAULT_ID=smoke \
+            -e KMIP_VAULT_ENDPOINTS=127.0.0.1:1 \
+            -p $PORT:$PORT kg-smoke
+          ok=0
+          for _ in $(seq 1 15); do
+            if curl -fs "http://localhost:$PORT/health" | grep -q '"status"'; then ok=1; break; fi
+            sleep 1
+          done
+          echo "--- container logs ---"; docker logs kg-smoke || true
+          docker rm -f kg-smoke >/dev/null 2>&1 || true
+          if [ "$ok" != "1" ]; then
+            echo "::error::Image did not serve /health on the injected PORT=$PORT."
+            exit 1
+          fi
+          echo "✓ listens on injected \$PORT=$PORT"
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          REF="${GITHUB_REF#refs/tags/}"
+          [ "$GITHUB_REF" = "${GITHUB_REF#refs/tags/}" ] && REF="manual-$(git rev-parse --short HEAD)"
+          echo "tag=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # linux/amd64 only — the TDX enclave is amd64; a multi-arch index
+          # would change the digest the platform pins at OID 3.2.
+          platforms: linux/amd64
+          provenance: false
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
+            ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}-${{ github.sha }}
