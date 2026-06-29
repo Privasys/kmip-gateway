@@ -114,6 +114,56 @@ func (c *Client) MintKeyGrant(ctx context.Context, vaultID, name, keyType, cnf, 
 	return r.toKeyGrant(), nil
 }
 
+// Constellation is the active vault constellation's addressing, discovered from
+// the platform directory (so the gateway never hard-codes endpoints or the pin).
+type Constellation struct {
+	Endpoints []string
+	MRENCLAVE string
+	AttServer string
+}
+
+// Directory fetches the active vault constellation (GET /api/v1/vaults): the
+// shared MRENCLAVE pin, the attestation server, and the enabled vault endpoints.
+// The directory is dual-gated, so an attested enclave can read it; here the
+// gateway authenticates with the control-plane bearer it already holds.
+func (c *Client) Directory(ctx context.Context) (*Constellation, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/v1/vaults", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("vault directory %s: %s", resp.Status, strings.TrimSpace(string(data)))
+	}
+	var out struct {
+		Constellation *struct {
+			Mrenclave         string `json:"mrenclave"`
+			AttestationServer string `json:"attestation_server"`
+		} `json:"constellation"`
+		Vaults []struct {
+			Host string `json:"host"`
+			Port int    `json:"port"`
+		} `json:"vaults"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("decode vault directory: %w", err)
+	}
+	if out.Constellation == nil {
+		return nil, fmt.Errorf("no active vault constellation is configured")
+	}
+	con := &Constellation{MRENCLAVE: out.Constellation.Mrenclave, AttServer: out.Constellation.AttestationServer}
+	for _, v := range out.Vaults {
+		con.Endpoints = append(con.Endpoints, fmt.Sprintf("%s:%d", v.Host, v.Port))
+	}
+	return con, nil
+}
+
 // RotateKeyGrant mints a grant for a new primary version of an existing key
 // (same type + policy), bound to cnf.
 func (c *Client) RotateKeyGrant(ctx context.Context, vaultID, name, cnf string) (*vault.KeyGrant, error) {

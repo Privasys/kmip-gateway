@@ -55,23 +55,41 @@ The key policy then grants the operations to the gateway's app TEE principal
   Provide a server certificate with `KMIP_TLS_CERT`/`KMIP_TLS_KEY`, or the gateway
   generates a self-signed one at startup and logs its fingerprint to pin.
 - **HTTP** on `$PORT` (the manager-injected app port, default `:8080`):
-  `GET /health`, `GET /version`, and the MCP tools (`POST /keys`, `POST /sign`,
-  `POST /public`).
+  `GET /health`, `GET /version`, `POST /configure`, and the MCP tools
+  (`POST /keys`, `POST /sign`, `POST /public`).
 
 ## Configuration
 
-| Env | Meaning |
+The configuration is platform-native: the platform does not inject app env vars,
+so the gateway **discovers the constellation** from the directory and receives
+its app-specific configuration at runtime via **`POST /configure`**. The HTTP
+surface (health + configure) is up from the moment the process starts; the KMIP
+listener and the MCP tools become live once configured.
+
+`POST /configure` (JSON):
+
+| Field | Meaning |
 | --- | --- |
-| `KMIP_VAULT_ID` | the vault this gateway fronts (handles are `vaults/<id>/<name>`) |
-| `KMIP_VAULT_ENDPOINTS` | comma-separated constellation endpoints (`host:port`) |
-| `KMIP_VAULT_MRENCLAVE` | vault MRENCLAVE pin (hex) |
-| `KMIP_ATTESTATION_SERVER` | attestation server verify endpoint |
-| `KMIP_ATTESTATION_TOKEN` | bearer for quote verification (`aud=attestation-server`) |
-| `KMIP_MGMT_URL` | management-service origin (enables key creation via minted grants) |
-| `KMIP_OWNER_TOKEN` | the vault owner's OIDC bearer |
-| `KMIP_LISTEN_ADDR` | KMIP listen address (default `0.0.0.0:5696`) |
-| `KMIP_TLS_CERT` / `KMIP_TLS_KEY` | KMIP server certificate (PEM); self-signed if unset |
-| `PORT` | HTTP surface port, injected by the manager (default `8080`) |
+| `vault_id` | the vault this gateway fronts (handles are `vaults/<id>/<name>`) |
+| `mgmt_url` | management-service origin (discovers the constellation; mints key grants) |
+| `owner_token` | OIDC bearer for the control plane (and, without app identity, vault owner auth) |
+| `attestation_token` | bearer for vault quote verification (`aud=attestation-server`) |
+
+The constellation endpoints, MRENCLAVE pin, and attestation server are fetched
+from `GET /api/v1/vaults`, never configured by hand.
+
+Platform-injected (the runtime sets these; no action needed):
+`PORT`, `PRIVASYS_APP_ID`, `PRIVASYS_CONTAINER_TOKEN`. App identity is opted in
+with `KMIP_MANAGER_IDENTITY_URL` (the manager mint endpoint); the gateway then
+authenticates to the vault as itself, no owner bearer in the data path.
+
+Other env: `KMIP_LISTEN_ADDR` (default `0.0.0.0:5696`), `KMIP_TLS_CERT` /
+`KMIP_TLS_KEY` (KMIP server certificate; self-signed if unset).
+
+For **local testing**, a full constellation in the environment self-configures
+the gateway at startup (no `/configure` call): `KMIP_VAULT_ID`,
+`KMIP_VAULT_ENDPOINTS`, `KMIP_VAULT_MRENCLAVE`, `KMIP_ATTESTATION_SERVER`,
+`KMIP_ATTESTATION_TOKEN`, `KMIP_OWNER_TOKEN`, `KMIP_MGMT_URL`.
 
 ## Built with
 

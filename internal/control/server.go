@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"sync"
 
 	vsdk "github.com/Privasys/enclave-vaults-client/go/vault"
 )
@@ -26,14 +27,46 @@ type Vault interface {
 	GetKeyInfo(ctx context.Context, name string) (vsdk.KeyInfo, error)
 }
 
-// Server is the HTTP management + health surface.
-type Server struct {
-	sess    Vault
-	version string
+// ConfigRequest is the app-specific configuration delivered at runtime (the
+// platform does not inject app env vars; apps configure themselves). The
+// constellation itself is discovered, so only the vault id + the control-plane
+// tokens are supplied here.
+type ConfigRequest struct {
+	VaultID          string `json:"vault_id"`
+	MgmtURL          string `json:"mgmt_url"`
+	OwnerToken       string `json:"owner_token"`
+	AttestationToken string `json:"attestation_token"`
 }
 
-// New builds the control server.
-func New(sess Vault, version string) *Server { return &Server{sess: sess, version: version} }
+// Server is the HTTP management + health surface. The vault session is installed
+// at configure time, so the surface serves health (and accepts /configure) from
+// the moment the process starts.
+type Server struct {
+	version   string
+	mu        sync.RWMutex
+	sess      Vault
+	configure func(ConfigRequest) error
+}
+
+// New builds the control server. The session is nil until configured.
+func New(version string) *Server { return &Server{version: version} }
+
+// OnConfigure registers the handler that builds and installs the vault session
+// from a runtime ConfigRequest (discovering the constellation and starting KMIP).
+func (s *Server) OnConfigure(fn func(ConfigRequest) error) { s.configure = fn }
+
+// SetSession installs the live vault session (called once configuration succeeds).
+func (s *Server) SetSession(v Vault) {
+	s.mu.Lock()
+	s.sess = v
+	s.mu.Unlock()
+}
+
+func (s *Server) session() Vault {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.sess
+}
 
 // Handler returns the routed HTTP handler (Go 1.22 method+path patterns).
 func (s *Server) Handler() http.Handler {
@@ -41,10 +74,48 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /version", s.versionInfo)
 	mux.HandleFunc("GET /", s.root)
+	mux.HandleFunc("POST /configure", s.configureHandler)
 	mux.HandleFunc("POST /keys", s.createKey)
 	mux.HandleFunc("POST /sign", s.sign)
 	mux.HandleFunc("POST /public", s.getPublicKey)
 	return mux
+}
+
+// configureHandler installs the app's runtime configuration. Idempotent-ish: the
+// first successful configure wins; once configured the gateway serves KMIP.
+func (s *Server) configureHandler(w http.ResponseWriter, r *http.Request) {
+	if s.configure == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "configuration is not enabled"})
+		return
+	}
+	if s.session() != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "already configured"})
+		return
+	}
+	var req ConfigRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if req.VaultID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "vault_id is required"})
+		return
+	}
+	if err := s.configure(req); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "configured"})
+}
+
+// requireSession returns the live session or writes a 503 when not yet configured.
+func (s *Server) requireSession(w http.ResponseWriter) (Vault, bool) {
+	sess := s.session()
+	if sess == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "gateway is awaiting configuration"})
+		return nil, false
+	}
+	return sess, true
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
@@ -66,10 +137,15 @@ func (s *Server) root(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
+	configured := "false"
+	if s.session() != nil {
+		configured = "true"
+	}
 	writeJSON(w, http.StatusOK, map[string]string{
-		"service": "kmip-gateway",
-		"version": s.version,
-		"summary": "KMIP 2.1 front-end for the Privasys vHSM. KMIP clients use the TTLV port; this surface is health + management.",
+		"service":    "kmip-gateway",
+		"version":    s.version,
+		"configured": configured,
+		"summary":    "KMIP 2.1 front-end for the Privasys vHSM. KMIP clients use the TTLV port; this surface is health + management.",
 	})
 }
 
@@ -86,7 +162,11 @@ func (s *Server) createKey(w http.ResponseWriter, r *http.Request) {
 	if body.Type == "" {
 		body.Type = "aes"
 	}
-	handle, err := s.sess.Create(r.Context(), body.Name, body.Type, false)
+	sess, ok := s.requireSession(w)
+	if !ok {
+		return
+	}
+	handle, err := sess.Create(r.Context(), body.Name, body.Type, false)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -113,7 +193,11 @@ func (s *Server) sign(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "message_b64 must be base64"})
 		return
 	}
-	sig, alg, err := s.sess.Sign(r.Context(), body.Name, msg)
+	sess, ok := s.requireSession(w)
+	if !ok {
+		return
+	}
+	sig, alg, err := sess.Sign(r.Context(), body.Name, msg)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -137,7 +221,11 @@ func (s *Server) getPublicKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name is required"})
 		return
 	}
-	info, err := s.sess.GetKeyInfo(r.Context(), body.Name)
+	sess, ok := s.requireSession(w)
+	if !ok {
+		return
+	}
+	info, err := sess.GetKeyInfo(r.Context(), body.Name)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
