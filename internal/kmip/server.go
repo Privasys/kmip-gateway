@@ -10,12 +10,14 @@
 package kmip
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
 
 	kmip "github.com/gemalto/kmip-go"
 	"github.com/gemalto/kmip-go/kmip14"
+	"github.com/gemalto/kmip-go/ttlv"
 
 	vsdk "github.com/Privasys/enclave-vaults-client/go/vault"
 )
@@ -65,6 +67,18 @@ func New(sess Vault) *Server {
 
 // Serve accepts KMIP connections on l until the listener is closed.
 func (s *Server) Serve(l net.Listener) error { return s.srv.Serve(l) }
+
+// HandleMessage runs one KMIP TTLV request message through the operation mux and
+// returns the TTLV response message. This is the sealed-session transport: the
+// gateway is reached over HTTP (POST /kmip) through the platform's session relay,
+// so there is no gateway-managed TLS — attestation and confidentiality come from
+// the sealed session (the same mechanism the platform uses for browser SDKs).
+func (s *Server) HandleMessage(ctx context.Context, reqTTLV []byte) []byte {
+	req := &kmip.Request{TTLV: ttlv.TTLV(reqTTLV)}
+	var buf bytes.Buffer
+	s.srv.Handler.ServeKMIP(ctx, req, &buf)
+	return buf.Bytes()
+}
 
 // fail attaches a KMIP result reason to an error so the protocol handler maps it
 // to a proper failure batch item (a reason-less error would panic the handler).

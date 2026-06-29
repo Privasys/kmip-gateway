@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"sync"
 
@@ -25,6 +26,13 @@ type Vault interface {
 	Create(ctx context.Context, name, keyType string, exportable bool) (string, error)
 	Sign(ctx context.Context, name string, message []byte) (sig []byte, alg string, err error)
 	GetKeyInfo(ctx context.Context, name string) (vsdk.KeyInfo, error)
+}
+
+// KMIPHandler runs one KMIP TTLV request message and returns the TTLV response.
+// The gateway serves KMIP over HTTP (POST /kmip) so it rides the platform's
+// sealed session — attested + confidential — with no gateway-managed TLS.
+type KMIPHandler interface {
+	HandleMessage(ctx context.Context, reqTTLV []byte) []byte
 }
 
 // ConfigRequest is the app-specific configuration delivered at runtime (the
@@ -49,6 +57,7 @@ type Server struct {
 	version   string
 	mu        sync.RWMutex
 	sess      Vault
+	kmip      KMIPHandler
 	configure func(ConfigRequest) error
 }
 
@@ -59,11 +68,19 @@ func New(version string) *Server { return &Server{version: version} }
 // from a runtime ConfigRequest (discovering the constellation and starting KMIP).
 func (s *Server) OnConfigure(fn func(ConfigRequest) error) { s.configure = fn }
 
-// SetSession installs the live vault session (called once configuration succeeds).
-func (s *Server) SetSession(v Vault) {
+// SetSession installs the live vault session and KMIP handler (called once
+// configuration succeeds).
+func (s *Server) SetSession(v Vault, k KMIPHandler) {
 	s.mu.Lock()
 	s.sess = v
+	s.kmip = k
 	s.mu.Unlock()
+}
+
+func (s *Server) kmipHandler() KMIPHandler {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.kmip
 }
 
 func (s *Server) session() Vault {
@@ -79,6 +96,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /version", s.versionInfo)
 	mux.HandleFunc("GET /", s.root)
 	mux.HandleFunc("POST /configure", s.configureHandler)
+	mux.HandleFunc("POST /kmip", s.handleKMIP)
 	mux.HandleFunc("POST /keys", s.createKey)
 	mux.HandleFunc("POST /sign", s.sign)
 	mux.HandleFunc("POST /public", s.getPublicKey)
@@ -110,6 +128,27 @@ func (s *Server) configureHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "configured"})
+}
+
+// handleKMIP runs one KMIP TTLV message (the request body) through the KMIP
+// operation mux and returns the TTLV response. Reached over the sealed session
+// via the platform's relay, so the transport is attested + confidential without
+// any gateway-managed TLS.
+func (s *Server) handleKMIP(w http.ResponseWriter, r *http.Request) {
+	k := s.kmipHandler()
+	if k == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "gateway is awaiting configuration"})
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil || len(body) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty or unreadable KMIP request body"})
+		return
+	}
+	resp := k.HandleMessage(r.Context(), body)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(resp)
 }
 
 // requireSession returns the live session or writes a 503 when not yet configured.

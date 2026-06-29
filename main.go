@@ -17,7 +17,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"log"
 	"net/http"
@@ -90,17 +89,13 @@ func authMode(s *vault.Session) string {
 
 func main() {
 	pc := loadPlatformConfig()
-	addr := env("KMIP_LISTEN_ADDR", "0.0.0.0:5696")
-
 	ctrl := control.New(version)
-	configured := make(chan *vault.Session, 1)
 
 	install := func(sess *vault.Session) {
-		ctrl.SetSession(sess)
-		select {
-		case configured <- sess:
-		default: // first configuration wins
-		}
+		// The KMIP server (TTLV) and the MCP tools both dispatch to the session;
+		// both are reached over the platform's sealed session via the control
+		// surface, so the gateway serves no TLS of its own.
+		ctrl.SetSession(sess, kmipsrv.New(sess))
 	}
 
 	// Runtime configuration: discover the constellation, build the session.
@@ -155,15 +150,6 @@ func main() {
 		return nil
 	})
 
-	// HTTP surface (health + /configure + MCP tools) up immediately on $PORT.
-	httpAddr := "0.0.0.0:" + env("PORT", "8080")
-	go func() {
-		log.Printf("kmip-gateway: HTTP (health + configure + MCP tools) on %s", httpAddr)
-		if err := http.ListenAndServe(httpAddr, ctrl.Handler()); err != nil {
-			log.Fatalf("kmip-gateway: http serve: %v", err)
-		}
-	}()
-
 	// Local-testing path: a full constellation in the environment self-configures
 	// at startup, with no discovery or /configure call needed.
 	if eps, mre, as := envConstellation(); os.Getenv("KMIP_VAULT_ID") != "" && len(eps) > 0 {
@@ -180,23 +166,15 @@ func main() {
 			IdentityToken: pc.identityToken,
 		}, newGrantor(os.Getenv("KMIP_MGMT_URL"), os.Getenv("KMIP_OWNER_TOKEN"))))
 		log.Printf("kmip-gateway: self-configured from the environment")
-	} else {
-		log.Printf("kmip-gateway: awaiting configuration (POST /configure on %s)", httpAddr)
 	}
 
-	// Block until configured, then serve KMIP.
-	sess := <-configured
-
-	tlsCfg, err := kmipTLSConfig(os.Getenv("KMIP_TLS_CERT"), os.Getenv("KMIP_TLS_KEY"))
-	if err != nil {
-		log.Fatalf("kmip-gateway: %v", err)
-	}
-	l, err := tls.Listen("tcp", addr, tlsCfg)
-	if err != nil {
-		log.Fatalf("kmip-gateway: listen %s: %v", addr, err)
-	}
-	log.Printf("kmip-gateway: KMIP TTLV over TLS on %s", addr)
-	if err := kmipsrv.New(sess).Serve(l); err != nil {
-		log.Fatalf("kmip-gateway: serve: %v", err)
+	// One HTTP surface on the manager-injected $PORT serves everything: the health
+	// probe, /configure, the KMIP TTLV endpoint (POST /kmip), and the MCP tools.
+	// All of it rides the platform's sealed session — attested + confidential — so
+	// the gateway terminates no TLS itself.
+	httpAddr := "0.0.0.0:" + env("PORT", "8080")
+	log.Printf("kmip-gateway: serving (health + configure + KMIP + MCP tools) on %s", httpAddr)
+	if err := http.ListenAndServe(httpAddr, ctrl.Handler()); err != nil {
+		log.Fatalf("kmip-gateway: http serve: %v", err)
 	}
 }

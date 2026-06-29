@@ -54,5 +54,5 @@ RUN sed -i \
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates
 COPY --from=builder /kmip-gateway /usr/local/bin/kmip-gateway
-EXPOSE 5696
+# The gateway serves one HTTP surface on the manager-injected $PORT (no own TLS).
 ENTRYPOINT ["kmip-gateway"]
