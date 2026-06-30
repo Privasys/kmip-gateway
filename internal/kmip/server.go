@@ -12,6 +12,7 @@ package kmip
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net"
 
@@ -20,6 +21,13 @@ import (
 	"github.com/gemalto/kmip-go/ttlv"
 
 	vsdk "github.com/Privasys/enclave-vaults-client/go/vault"
+)
+
+// KMIP TTLV tags the response-header strip below operates on.
+const (
+	tagResponseHeader         = 0x42007A
+	tagClientCorrelationValue = 0x420105
+	tagServerCorrelationValue = 0x420106
 )
 
 // Vault is the in-enclave key surface the KMIP front-end dispatches to. The
@@ -77,7 +85,100 @@ func (s *Server) HandleMessage(ctx context.Context, reqTTLV []byte) []byte {
 	req := &kmip.Request{TTLV: ttlv.TTLV(reqTTLV)}
 	var buf bytes.Buffer
 	s.srv.Handler.ServeKMIP(ctx, req, &buf)
-	return buf.Bytes()
+	return stripCorrelation(buf.Bytes())
+}
+
+// stripCorrelation removes the Client/Server CorrelationValue fields the gemalto
+// StandardProtocolHandler always emits in the ResponseHeader. They are a valid
+// (optional, KMIP 1.4) field, but strict clients — notably PyKMIP — do not parse
+// them and abort the whole response, so we drop them for broad client interop.
+// Pure TTLV byte surgery (every element value is already 8-byte-aligned, so no
+// re-padding is needed); returns the input unchanged on any malformed structure.
+func stripCorrelation(in []byte) []byte {
+	if len(in) < 8 || in[3] != byte(ttlv.TypeStructure) {
+		return in
+	}
+	msgLen := int(binary.BigEndian.Uint32(in[4:8]))
+	if 8+msgLen > len(in) {
+		return in
+	}
+	val := in[8 : 8+msgLen]
+	for off := 0; off < len(val); {
+		fl := elemFullLen(val[off:])
+		if fl <= 0 || off+fl > len(val) {
+			return in
+		}
+		if tagOf(val[off:]) == tagResponseHeader && val[off+3] == byte(ttlv.TypeStructure) {
+			newRh, removed := stripHeaderCorrelation(val[off : off+fl])
+			if removed == 0 {
+				return in
+			}
+			out := make([]byte, 0, len(in)-removed)
+			out = append(out, in[:4]...)
+			out = appendU32(out, uint32(msgLen-removed))
+			out = append(out, val[:off]...)
+			out = append(out, newRh...)
+			out = append(out, val[off+fl:]...)
+			out = append(out, in[8+msgLen:]...)
+			return out
+		}
+		off += fl
+	}
+	return in
+}
+
+// stripHeaderCorrelation rebuilds a ResponseHeader element without the
+// Client/Server CorrelationValue children, returning the new element + the number
+// of bytes removed (0 if there was nothing to strip / on malformed input).
+func stripHeaderCorrelation(rh []byte) ([]byte, int) {
+	rhLen := int(binary.BigEndian.Uint32(rh[4:8]))
+	if 8+rhLen > len(rh) {
+		return rh, 0
+	}
+	val := rh[8 : 8+rhLen]
+	var newVal []byte
+	removed := 0
+	for off := 0; off < len(val); {
+		fl := elemFullLen(val[off:])
+		if fl <= 0 || off+fl > len(val) {
+			return rh, 0
+		}
+		if t := tagOf(val[off:]); t == tagClientCorrelationValue || t == tagServerCorrelationValue {
+			removed += fl
+		} else {
+			newVal = append(newVal, val[off:off+fl]...)
+		}
+		off += fl
+	}
+	if removed == 0 {
+		return rh, 0
+	}
+	out := make([]byte, 0, len(rh)-removed)
+	out = append(out, rh[:4]...)
+	out = appendU32(out, uint32(rhLen-removed))
+	out = append(out, newVal...)
+	return out, removed
+}
+
+func tagOf(b []byte) int { return int(b[0])<<16 | int(b[1])<<8 | int(b[2]) }
+
+// elemFullLen returns the total size of the TTLV element at b (8-byte header +
+// value padded up to an 8-byte boundary), or -1 if b is too short.
+func elemFullLen(b []byte) int {
+	if len(b) < 8 {
+		return -1
+	}
+	full := 8 + int(binary.BigEndian.Uint32(b[4:8]))
+	if r := full % 8; r != 0 {
+		full += 8 - r
+	}
+	return full
+}
+
+func appendU32(b []byte, v uint32) []byte {
+	var x [4]byte
+	binary.BigEndian.PutUint32(x[:], v)
+	return append(b, x[:]...)
 }
 
 // fail attaches a KMIP result reason to an error so the protocol handler maps it
