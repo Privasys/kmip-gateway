@@ -1,4 +1,8 @@
 {
+    "config_api": {
+        "method": "POST",
+        "path": "/configure"
+    },
     "store": {
         "tagline": "A standard KMIP 2.1 interface in front of the Privasys vHSM, so existing key-management tooling talks to an attested enclave key store.",
         "category": "Security & Privacy",
@@ -11,7 +15,30 @@
     },
     "tools": [
         {
+            "name": "configure",
+            "role": "config",
+            "description": "Point the gateway at the vault it should front. The gateway authenticates to the control plane by attestation (no bearer), so it only needs the management API URL and which of your vaults to front; it discovers the vault constellation addressing from the management API. Stored in the per-app sealed volume; the gateway re-applies it automatically on restart. Until this succeeds the runtime keeps the KMIP endpoint at HTTP 503.",
+            "endpoint": "/configure",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "mgmt_url": {
+                        "type": "string",
+                        "description": "Base URL of the Privasys management API (e.g. https://api.privasys.org).",
+                        "x-privasys": { "label": "Management API URL" }
+                    },
+                    "vault_id": {
+                        "type": "string",
+                        "description": "The id of the vault this gateway should front. Must be a vault you own.",
+                        "x-privasys": { "label": "Vault id" }
+                    }
+                },
+                "required": ["mgmt_url", "vault_id"]
+            }
+        },
+        {
             "name": "create_key",
+            "role": "action",
             "description": "Create a managed key in the vault. The key material is generated and stored inside the enclave; the gateway and the host never see it. Use type 'aes' for an AES-256-GCM wrapping key or 'p256' for an ECDSA-P256 signing key.",
             "endpoint": "/keys",
             "inputSchema": {
@@ -32,6 +59,7 @@
         },
         {
             "name": "sign",
+            "role": "action",
             "description": "Sign a message with a managed ECDSA-P256 signing key. The signature is produced inside the enclave; the private key never leaves the vault.",
             "endpoint": "/sign",
             "inputSchema": {
@@ -51,6 +79,7 @@
         },
         {
             "name": "get_public_key",
+            "role": "action",
             "description": "Fetch the public key of a managed signing key, base64 encoded, so a relying party can verify signatures.",
             "endpoint": "/public",
             "inputSchema": {

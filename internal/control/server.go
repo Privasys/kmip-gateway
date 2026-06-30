@@ -35,19 +35,15 @@ type KMIPHandler interface {
 	HandleMessage(ctx context.Context, reqTTLV []byte) []byte
 }
 
-// ConfigRequest is the app-specific configuration delivered at runtime (the
-// platform does not inject app env vars; apps configure themselves). The
-// constellation itself is discovered, so only the vault id + the control-plane
-// tokens are supplied here.
+// ConfigRequest is the typed configuration the owner submits through the
+// platform's native Configure tab (the role:config tool in privasys.json). The
+// gateway authenticates to the control plane by attestation, so it needs only the
+// management API URL and which of the owner's vaults to front; everything else
+// (the constellation addressing, a fresh attestation token) is discovered from
+// the management API.
 type ConfigRequest struct {
-	VaultID          string `json:"vault_id"`
-	MgmtURL          string `json:"mgmt_url"`
-	OwnerToken       string `json:"owner_token"`
-	AttestationToken string `json:"attestation_token"`
-	// UseAppIdentity selects the no-bearer vault auth: the gateway authenticates
-	// to the vault with its manager-minted RA-TLS identity (app id) rather than the
-	// owner bearer. Selectable here because the platform does not inject app env.
-	UseAppIdentity bool `json:"use_app_identity"`
+	MgmtURL string `json:"mgmt_url"`
+	VaultID string `json:"vault_id"`
 }
 
 // Server is the HTTP management + health surface. The vault session is installed
@@ -103,15 +99,12 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// configureHandler installs the app's runtime configuration. Idempotent-ish: the
-// first successful configure wins; once configured the gateway serves KMIP.
+// configureHandler applies the typed config (role:config tool). Returning 2xx is
+// what lifts the manager's freeze gate. Re-deliverable: submitting it again
+// re-points the gateway (e.g. at a different vault).
 func (s *Server) configureHandler(w http.ResponseWriter, r *http.Request) {
 	if s.configure == nil {
 		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "configuration is not enabled"})
-		return
-	}
-	if s.session() != nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "already configured"})
 		return
 	}
 	var req ConfigRequest
@@ -119,8 +112,8 @@ func (s *Server) configureHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
-	if req.VaultID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "vault_id is required"})
+	if req.MgmtURL == "" || req.VaultID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mgmt_url and vault_id are required"})
 		return
 	}
 	if err := s.configure(req); err != nil {

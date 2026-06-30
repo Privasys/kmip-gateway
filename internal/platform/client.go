@@ -172,13 +172,13 @@ func (c *Client) RotateKeyGrant(ctx context.Context, vaultID, name, cnf string) 
 	return r.toKeyGrant(), nil
 }
 
-// OperatedVault is what the attested gateway discovers at startup from a single
-// attested call: the vault it fronts, the constellation addressing, and a fresh
-// attestation-server token — everything it needs to build the vault session with
-// no static secret and no owner bearer.
-type OperatedVault struct {
-	VaultID          string
-	OwnerSub         string
+// Discovery is what the attested gateway fetches in one attested call: the
+// vaults its owner owns (it fronts the configured one, which must be among
+// these), the active constellation addressing, and a fresh attestation-server
+// token — everything it needs to build the vault session with no static secret
+// and no owner bearer.
+type Discovery struct {
+	OwnerVaultIDs    []string
 	Endpoints        []string
 	MRENCLAVE        string
 	AttServer        string
@@ -189,10 +189,20 @@ type OperatedVault struct {
 	AttTokenExpiresAt int64
 }
 
-// DiscoverOperated fetches GET /api/v1/keyvaults/operated with the gateway's
-// attested identity: the control plane returns the vault(s) this app is the
-// designated operator of. A gateway fronts one vault, so the first is used.
-func (c *Client) DiscoverOperated(ctx context.Context) (*OperatedVault, error) {
+// Owns reports whether vaultID is among the owner's vaults.
+func (d *Discovery) Owns(vaultID string) bool {
+	for _, id := range d.OwnerVaultIDs {
+		if id == vaultID {
+			return true
+		}
+	}
+	return false
+}
+
+// Discover fetches GET /api/v1/keyvaults/operated with the gateway's attested
+// identity: the control plane returns the vaults owned by this app's owner plus
+// the active constellation + a fresh attestation token.
+func (c *Client) Discover(ctx context.Context) (*Discovery, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/v1/keyvaults/operated", nil)
 	if err != nil {
 		return nil, err
@@ -207,12 +217,11 @@ func (c *Client) DiscoverOperated(ctx context.Context) (*OperatedVault, error) {
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("discover operated vault %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		return nil, fmt.Errorf("discover vaults %s: %s", resp.Status, strings.TrimSpace(string(data)))
 	}
 	var out struct {
 		Vaults []struct {
-			ID       string `json:"id"`
-			OwnerSub string `json:"owner_sub"`
+			ID string `json:"id"`
 		} `json:"vaults"`
 		Constellation struct {
 			Endpoints         []string `json:"endpoints"`
@@ -223,18 +232,17 @@ func (c *Client) DiscoverOperated(ctx context.Context) (*OperatedVault, error) {
 		AttestationTokenExpiresAt int64  `json:"attestation_token_expires_at"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
-		return nil, fmt.Errorf("decode operated vaults: %w", err)
+		return nil, fmt.Errorf("decode discovery: %w", err)
 	}
-	if len(out.Vaults) == 0 {
-		return nil, fmt.Errorf("this app is not the designated operator of any vault")
-	}
-	return &OperatedVault{
-		VaultID:          out.Vaults[0].ID,
-		OwnerSub:         out.Vaults[0].OwnerSub,
-		Endpoints:        out.Constellation.Endpoints,
-		MRENCLAVE:        out.Constellation.Mrenclave,
+	d := &Discovery{
+		Endpoints:         out.Constellation.Endpoints,
+		MRENCLAVE:         out.Constellation.Mrenclave,
 		AttServer:         out.Constellation.AttestationServer,
 		AttestationToken:  out.AttestationToken,
 		AttTokenExpiresAt: out.AttestationTokenExpiresAt,
-	}, nil
+	}
+	for _, v := range out.Vaults {
+		d.OwnerVaultIDs = append(d.OwnerVaultIDs, v.ID)
+	}
+	return d, nil
 }
