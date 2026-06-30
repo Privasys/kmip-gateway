@@ -71,6 +71,18 @@ jobs:
           [ "$GITHUB_REF" = "${GITHUB_REF#refs/tags/}" ] && REF="manual-$(git rev-parse --short HEAD)"
           echo "tag=$REF" >> "$GITHUB_OUTPUT"
 
+      # Embed the image-bound manifest (privasys.json) as the org.privasys.manifest
+      # OCI label, so the platform reads the typed config + tools straight from the
+      # measured image — what the owner sees in the Configure tab is attested.
+      - name: Resolve manifest label
+        id: manifest
+        run: |
+          {
+            echo 'json<<MANIFEST_EOF'
+            jq -c . privasys.json
+            echo MANIFEST_EOF
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -80,6 +92,8 @@ jobs:
           # would change the digest the platform pins at OID 3.2.
           platforms: linux/amd64
           provenance: false
+          labels: |
+            org.privasys.manifest=${{ steps.manifest.outputs.json }}
           tags: |
             ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
             ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}-${{ github.sha }}
