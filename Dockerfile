@@ -5,8 +5,8 @@
 # enclave-vaults-client) are cloned + pinned, so the image builds from this repo
 # alone (build context = repo root). Pin the refs for reproducibility; bump the
 # ARGs when the siblings move.
-ARG GO_RATLS_VERSION=privasys-v0.2.0-go1.25.8
-ARG RA_TLS_CLIENTS_REF=8a0318d2641ff4e4ce7e8cbaa8391b04fdbb48c9
+ARG GO_RATLS_VERSION=privasys-v0.5.1-go1.26.5
+ARG RA_TLS_CLIENTS_REF=64438d2593f26e4250bbb75e25240a5422876136
 ARG ENCLAVE_VAULTS_CLIENT_REF=b34605cc81282e10dedbd3eecf6512f1e91ccebe
 
 FROM alpine:3.21 AS toolchain
