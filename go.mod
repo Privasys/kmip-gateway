@@ -22,8 +22,7 @@ require (
 	golang.org/x/text v0.29.0 // indirect
 )
 
-// The RA-TLS data-plane dial needs the Privasys Go fork (built with -tags ratls);
-// the vault SDK + RA-TLS client are vendored siblings.
+// The vault SDK + RA-TLS v2 client are vendored siblings (upstream Go).
 replace enclave-os-mini/clients/go => ../ra-tls-clients/go
 
 replace github.com/Privasys/enclave-vaults-client/go => ../enclave-vaults-client/go

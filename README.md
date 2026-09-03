@@ -111,23 +111,20 @@ the gateway at startup (no `/configure` call): `KMIP_VAULT_ID`,
   key operations (create, wrap/unwrap, sign, key info, delete).
 - [Privasys/ra-tls-clients](https://github.com/Privasys/ra-tls-clients) (`/go`) —
   the RA-TLS verification policy and quote-verification client.
-- [Privasys/go](https://github.com/Privasys/go) — the Go fork that adds the
-  RA-TLS handshake hook the vault dial needs (built with `-tags ratls`).
 - [github.com/google/uuid](https://github.com/google/uuid) — unique key names
   when a KMIP client does not supply one.
 
 ## Build
 
-The RA-TLS data-plane dial needs the Privasys Go fork (build with `-tags ratls`).
-The vault SDK and RA-TLS client are vendored siblings under `platform/` via
-`replace` directives in `go.mod`.
+RA-TLS v2 builds on upstream Go. The vault SDK and RA-TLS client are vendored
+siblings under `platform/` via `replace` directives in `go.mod`.
 
 ```
-go build -tags ratls ./...
+go build ./...
 ```
 
 The container image is built reproducibly by the [`Dockerfile`](./Dockerfile),
-which fetches the Go fork release and clones the pinned sibling modules, so it
+which clones the pinned sibling modules, so it
 builds from this repo alone.
 
 ## Store and MCP
