@@ -25,102 +25,45 @@
 package identity
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/base64"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"net/http"
-	"time"
+	"strings"
+
+	ratls "enclave-os-mini/clients/go/ratls"
 )
 
-// ManagerMinter requests one-shot vault client identities from the in-TD manager.
+// ManagerMinter holds the gateway's manager-minted RA-TLS v2 client identity
+// and produces its evidence on demand.
 type ManagerMinter struct {
-	url   string
-	token string
-	hc    *http.Client
+	id *ratls.EgressIdentity
 }
 
-// New builds a minter for the manager mint endpoint (e.g.
-// http://localhost:9443/api/v1/vault-identity) authenticated with the per-app
-// mint-token the launcher injected.
+// New builds a minter for the in-TD manager. managerURL may be the manager
+// base URL or the legacy mint endpoint (.../api/v1/vault-identity); token is
+// the per-app mint token the launcher injected.
 func New(managerURL, token string) *ManagerMinter {
-	return &ManagerMinter{
-		url:   managerURL,
-		token: token,
-		hc:    &http.Client{Timeout: 15 * time.Second},
-	}
+	base := strings.TrimSuffix(strings.TrimSuffix(managerURL, "/"), "/api/v1/vault-identity")
+	return &ManagerMinter{id: ratls.NewEgressIdentity(base, token)}
 }
 
-type mintResponse struct {
-	CertPEM string `json:"cert_pem"`
-	KeyPEM  string `json:"key_pem"`
-}
-
-// GetClientCertificate returns a TLS GetClientCertificate callback that asks the
-// manager to mint a fresh identity bound to the vault's challenge for each
-// connection. The challenge arrives on CertificateRequestInfo.RATLSChallenge
-// (the Privasys Go fork).
+// GetClientCertificate returns the TLS GetClientCertificate callback: the
+// manager-minted identity (leaf key, chain, app-id OID, no evidence), cached
+// for its validity. Evidence for it is produced per connection by
+// ClientEvidence (RA-TLS v2).
 func (m *ManagerMinter) GetClientCertificate() func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
-	return func(info *tls.CertificateRequestInfo) (*tls.Certificate, error) {
-		if len(info.RATLSChallenge) == 0 {
-			return nil, errors.New("identity: vault sent no RA-TLS challenge (mutual RA-TLS required)")
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		return m.mint(ctx, info.RATLSChallenge)
-	}
+	return m.id.GetClientCertificate
 }
 
-// MintIdentityDER asks the manager to mint a one-shot identity bound to the
-// given challenge and returns the leaf certificate DER. Used to present the
-// gateway's attested identity to the control plane in a header (the control
-// plane verifies the TDX quote + app-id OID 3.6 + the report_data binding to
-// this challenge), so the gateway authenticates to mgmt-service by attestation
-// instead of an owner bearer.
-func (m *ManagerMinter) MintIdentityDER(ctx context.Context, challenge []byte) ([]byte, error) {
-	cert, err := m.mint(ctx, challenge)
-	if err != nil {
-		return nil, err
-	}
-	if len(cert.Certificate) == 0 {
-		return nil, errors.New("identity: minted certificate has no leaf")
-	}
-	return cert.Certificate[0], nil
+// ClientEvidence quotes the presented identity for one connection when the
+// vault requires it.
+func (m *ManagerMinter) ClientEvidence() ratls.ClientEvidenceSource {
+	return m.id.ClientEvidence
 }
 
-func (m *ManagerMinter) mint(ctx context.Context, challenge []byte) (*tls.Certificate, error) {
-	body, err := json.Marshal(map[string]string{
-		"challenge_b64": base64.StdEncoding.EncodeToString(challenge),
-	})
-	if err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+m.token)
-	resp, err := m.hc.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("identity: ask manager to mint: %w", err)
-	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("identity: manager mint %s: %s", resp.Status, string(data))
-	}
-	var out mintResponse
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode mint response: %w", err)
-	}
-	cert, err := tls.X509KeyPair([]byte(out.CertPEM), []byte(out.KeyPEM))
-	if err != nil {
-		return nil, fmt.Errorf("identity: parse minted certificate: %w", err)
-	}
-	return &cert, nil
+// HeaderIdentity returns the identity leaf (DER) and a quote proving it for
+// the given 32-byte challenge, the gateway's attested credential to the
+// control plane (header flow, RA-TLS v2: the quote commits to the leaf key,
+// the challenge and ratls.HeaderIdentityHctx).
+func (m *ManagerMinter) HeaderIdentity(_ context.Context, challenge []byte) (der, quote []byte, err error) {
+	return m.id.HeaderEvidence(challenge)
 }

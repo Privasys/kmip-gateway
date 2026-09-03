@@ -138,22 +138,15 @@ func (v *verifier) serve(c net.Conn) {
 // KMIP data is sent. A fresh challenge nonce binds the quote's ReportData to
 // this connection (anti-replay).
 func (v *verifier) connect() (*rc.Client, error) {
-	nonce := make([]byte, 32)
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
-	}
 	client, err := rc.Connect(v.host, 443, &rc.Options{
 		ServerName: v.host,
 		Timeout:    60 * time.Second,
-		Challenge:  nonce,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", v.host, err)
 	}
 	policy := &rc.VerificationPolicy{
 		TEE:              rc.TeeTypeTDX,
-		ReportData:       rc.ReportDataChallengeResponse,
-		Nonce:            nonce,
 		AllowDebugImages: v.allowDev,
 	}
 	if !v.insecure {

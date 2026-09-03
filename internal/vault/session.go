@@ -114,7 +114,6 @@ func (s *Session) policy() (*ratls.VerificationPolicy, error) {
 	return &ratls.VerificationPolicy{
 		TEE:               ratls.TeeTypeSGX,
 		MRENCLAVE:         mre,
-		ReportData:        ratls.ReportDataDeterministic,
 		QuoteVerification: &ratls.QuoteVerificationConfig{Endpoint: s.cfg.AttServer, Token: s.cfg.AttToken},
 	}, nil
 }
@@ -130,7 +129,6 @@ func verifyPolicy(mrenclaveHex, attServer, attToken string) (*ratls.Verification
 	return &ratls.VerificationPolicy{
 		TEE:               ratls.TeeTypeSGX,
 		MRENCLAVE:         mre,
-		ReportData:        ratls.ReportDataDeterministic,
 		QuoteVerification: &ratls.QuoteVerificationConfig{Endpoint: attServer, Token: attToken},
 	}, nil
 }
@@ -251,18 +249,12 @@ func (s *Session) dialOpts() (vsdk.DialOptions, error) {
 		if err != nil || len(mre) != 32 {
 			return vsdk.DialOptions{}, fmt.Errorf("vault mrenclave must be 32 bytes of hex")
 		}
-		nonce := make([]byte, 32)
-		if _, err := rand.Read(nonce); err != nil {
-			return vsdk.DialOptions{}, fmt.Errorf("generate challenge nonce: %w", err)
-		}
 		return vsdk.DialOptions{
-			Challenge:            nonce,
 			GetClientCertificate: s.minter.GetClientCertificate(),
+			ClientEvidence:       s.minter.ClientEvidence(),
 			VaultPolicy: &ratls.VerificationPolicy{
 				TEE:               ratls.TeeTypeSGX,
 				MRENCLAVE:         mre,
-				ReportData:        ratls.ReportDataChallengeResponse,
-				Nonce:             nonce,
 				QuoteVerification: &ratls.QuoteVerificationConfig{Endpoint: s.cfg.AttServer, Token: s.cfg.AttToken},
 			},
 		}, nil

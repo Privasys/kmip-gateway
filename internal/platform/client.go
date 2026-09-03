@@ -37,7 +37,7 @@ import (
 // identity.ManagerMinter (the measured manager is the sole minter, so the
 // stamped app-id is trustworthy by construction).
 type Attestor interface {
-	MintIdentityDER(ctx context.Context, challenge []byte) ([]byte, error)
+	HeaderIdentity(ctx context.Context, challenge []byte) (der, quote []byte, err error)
 }
 
 // Client talks to management-service's key-vault API, authenticated by the
@@ -78,12 +78,13 @@ func (c *Client) setAttestedAuth(ctx context.Context, req *http.Request) error {
 	if err != nil {
 		return err
 	}
-	der, err := c.attestor.MintIdentityDER(ctx, challenge)
+	der, quote, err := c.attestor.HeaderIdentity(ctx, challenge)
 	if err != nil {
 		return fmt.Errorf("mint attested identity: %w", err)
 	}
 	req.Header.Set("X-Privasys-App-Identity", base64.StdEncoding.EncodeToString(der))
 	req.Header.Set("X-Privasys-App-Challenge", base64.StdEncoding.EncodeToString(challenge))
+	req.Header.Set("X-Privasys-App-Evidence", base64.StdEncoding.EncodeToString(quote))
 	return nil
 }
 
