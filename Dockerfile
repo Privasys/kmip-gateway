@@ -5,8 +5,8 @@
 # enclave-vaults-client) are cloned + pinned, so the image builds from this repo
 # alone (build context = repo root). Pin the refs for reproducibility; bump the
 # ARGs when the siblings move.
-ARG RA_TLS_CLIENTS_REF=64438d2593f26e4250bbb75e25240a5422876136
-ARG ENCLAVE_VAULTS_CLIENT_REF=b34605cc81282e10dedbd3eecf6512f1e91ccebe
+ARG RA_TLS_CLIENTS_REF=c6c63216dc5a0915569826e3ba2c1efdf44de6b0
+ARG ENCLAVE_VAULTS_CLIENT_REF=23a24d9016fb81def9d755acf21d03836c700274
 
 FROM golang:1.26-alpine AS builder
 ARG RA_TLS_CLIENTS_REF
